@@ -9,3 +9,5 @@ __pycache__/
 *.pyzw
 *.pyzwz
 *.pyzwzw
+
+tests/
