@@ -41,7 +41,8 @@ class MVFoulsDataset(Dataset):
         transform=None,
         load_annotations: bool = True,
         max_frames: Optional[int] = None,
-        frame_rate: Optional[int] = None
+        frame_rate: Optional[int] = None,
+        target_size: Optional[Tuple[int, int]] = None  # (height, width)
     ):
         """
         Args:
@@ -56,6 +57,7 @@ class MVFoulsDataset(Dataset):
             load_annotations (bool): Whether to load annotations (False for challenge)
             max_frames (int): Maximum number of frames to load per video
             frame_rate (int): Target frame rate for video loading
+            target_size (Tuple[int, int]): Optional target size for resizing frames
         """
         self.root_dir = Path(root_dir)
         self.split = split
@@ -64,6 +66,7 @@ class MVFoulsDataset(Dataset):
         self.load_annotations = load_annotations and split != 'challenge'
         self.max_frames = max_frames
         self.frame_rate = frame_rate
+        self.target_size = target_size
         
         # Set split directory
         self.split_dir = self.root_dir / f"{split}_720p"
@@ -110,7 +113,7 @@ class MVFoulsDataset(Dataset):
         return action_dirs
     
     def _build_dataset_index(self) -> List[Dict]:
-        """Build index of all actions in the dataset (grouped by action)."""
+        """Build index of all individual video clips in the dataset."""
         dataset_index = []
         
         for action_dir in self.action_dirs:
@@ -126,15 +129,16 @@ class MVFoulsDataset(Dataset):
             # Apply clip selection to determine which clips to include
             selected_clips = self._select_clips(video_files)
             
-            if selected_clips:  # Only add if we have clips after selection
-                action_info = {
+            # Create a separate entry for each individual clip
+            for clip_path in selected_clips:
+                clip_info = {
                     'action_id': action_id,
                     'action_dir': action_dir,
-                    'clip_paths': selected_clips,  # All selected clips for this action
-                    'clip_names': [clip.name for clip in selected_clips],
+                    'clip_path': clip_path,
+                    'clip_name': clip_path.name,
                     'annotations': self.annotations.get(action_id, {}) if self.load_annotations else {}
                 }
-                dataset_index.append(action_info)
+                dataset_index.append(clip_info)
         
         return dataset_index
     
@@ -158,80 +162,127 @@ class MVFoulsDataset(Dataset):
         else:
             raise ValueError(f"Invalid clip_selection: {self.clip_selection}")
     
+    def _safe_float_conversion(self, value) -> float:
+        """Safely convert a value to float, handling empty strings and invalid values."""
+        if value is None or value == '':
+            return 0.0
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            print(f"Warning: Could not convert '{value}' to float, using 0.0")
+            return 0.0
+    
     def _load_video(self, video_path: Path) -> np.ndarray:
         """Load video from file and return as numpy array (frames 59-90 inclusive)."""
         cap = cv2.VideoCapture(str(video_path))
-        frames = []
-        start_frame = 59
-        end_frame = 90  # inclusive
-        num_frames_to_read = end_frame - start_frame + 1  # 32 frames
         
+        # --- Get clip length first so we can adjust the frame window if needed ---
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
+        # Desired slice parameters
+        desired_frames = 32
+        default_start_frame = 59
+        start_frame = default_start_frame
+        end_frame = start_frame + desired_frames - 1
+
+        # If the video is too short to reach our default [59-90] window, shift the
+        # window backwards so that we still try to grab 32 frames ending at the
+        # last available frame.
+        if total_frames > 0 and end_frame >= total_frames:
+            # New window end is the last frame in the clip
+            end_frame = total_frames - 1
+            # New window start makes a 32-frame segment (but not < 0)
+            start_frame = max(0, end_frame - desired_frames + 1)
+            print(f"Warning: Video {video_path} is too short, shifting window to {start_frame}-{end_frame}")
+
+        # After shifting, we may still have less than 32 frames (very short clip).
+        # In that case we will collect whatever frames exist and later pad by
+        # repeating the last available frame so that the returned tensor always
+        # has `desired_frames` frames.
+        num_frames_to_read = end_frame - start_frame + 1
+
+        # Seek to the adjusted start frame
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        frames = []
+
         try:
-            # Jump directly to start_frame for efficiency
-            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-            
-            # Read exactly num_frames_to_read frames
             for i in range(num_frames_to_read):
                 ret, frame = cap.read()
                 if not ret:
                     print(f"Warning: Could not read frame {start_frame + i} from {video_path}")
                     break
-                    
-                # Convert BGR to RGB
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                # Resize to target_size if requested
+                if self.target_size is not None:
+                    # target_size given as (H, W) but cv2 uses (W, H)
+                    h, w = self.target_size
+                    frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
+
                 frames.append(frame)
-                    
         except Exception as e:
             print(f"Error loading video {video_path}: {e}")
-            
         finally:
             cap.release()
-        
+
+        # If no frames could be read, return an empty array (caller may skip)
         if not frames:
             print(f"Warning: No frames loaded from {video_path} (frames {start_frame}-{end_frame})")
-            return np.array([])
-        
-        if len(frames) != num_frames_to_read:
-            print(f"Warning: Expected {num_frames_to_read} frames but got {len(frames)} from {video_path}")
+            # Return a black video of the correct shape instead of empty array
+            if self.target_size is not None:
+                h, w = self.target_size
+                black_frame = np.zeros((h, w, 3), dtype=np.uint8)
+            else:
+                # Use a default size if no target_size is set
+                black_frame = np.zeros((224, 224, 3), dtype=np.uint8)
             
-        return np.array(frames)  # Shape: (32, H, W, C) - frames 59-90
+            # Create 32 black frames
+            frames = [black_frame.copy() for _ in range(desired_frames)]
+            print(f"Warning: Using {desired_frames} black frames for {video_path}")
+            return np.stack(frames, axis=0)
+
+        # Pad very short clips by repeating the last frame so that length == desired_frames
+        while len(frames) < desired_frames:
+            frames.append(frames[-1].copy())
+
+        if len(frames) != desired_frames:
+            print(f"Warning: Expected {desired_frames} frames but got {len(frames)} from {video_path}")
+
+        return np.stack(frames, axis=0)  # Shape: (32, H, W, C)
     
     def __len__(self) -> int:
-        """Return the total number of actions in the dataset."""
+        """Return the total number of video clips in the dataset."""
         return len(self.dataset_index)
     
     def __getitem__(self, idx: int) -> Dict:
-        """Get a single action from the dataset (with all its clips)."""
+        """Get a single video clip from the dataset."""
         if idx >= len(self.dataset_index):
             raise IndexError(f"Index {idx} out of range for dataset of size {len(self.dataset_index)}")
         
-        action_info = self.dataset_index[idx]
+        clip_info = self.dataset_index[idx]
         
-        # Load all videos for this action
-        videos = []
-        for clip_path in action_info['clip_paths']:
-            video = self._load_video(clip_path)
-            videos.append(video)
+        # Load the single video clip
+        video = self._load_video(clip_info['clip_path'])
         
         # Prepare the sample
         sample = {
-            'videos': videos,  # List of video arrays
-            'action_id': int(action_info['action_id']),
-            'clip_names': action_info['clip_names'],  # List of clip names
-            'clip_paths': [str(path) for path in action_info['clip_paths']],  # List of clip paths
-            'num_clips': len(videos)
+            'video': video,  # Single video array (32, H, W, C)
+            'action_id': int(clip_info['action_id']),
+            'clip_name': clip_info['clip_name'],
+            'clip_path': str(clip_info['clip_path'])
         }
         
         # Add annotations if available
-        if self.load_annotations and action_info['annotations']:
-            annotations = action_info['annotations']
+        if self.load_annotations and clip_info['annotations']:
+            annotations = clip_info['annotations']
             sample.update({
                 'offence': annotations.get('Offence', ''),
                 'contact': annotations.get('Contact', ''),
                 'bodypart': annotations.get('Bodypart', ''),
                 'upper_body_part': annotations.get('Upper body part', ''),
                 'action_class': annotations.get('Action class', ''),
-                'severity': float(annotations.get('Severity', 0.0)),
+                'severity': self._safe_float_conversion(annotations.get('Severity', 0.0)),
                 'try_to_play': annotations.get('Try to play', ''),
                 'touch_ball': annotations.get('Touch ball', ''),
                 'handball': annotations.get('Handball', ''),
@@ -264,12 +315,13 @@ class MVFoulsDataset(Dataset):
     
     def get_split_info(self) -> Dict:
         """Get information about the dataset split."""
-        total_clips = sum(len(item['clip_paths']) for item in self.dataset_index)
+        # Count unique actions
+        unique_actions = len(set(int(item['action_id']) for item in self.dataset_index))
         
         info = {
             'split': self.split,
-            'total_actions': len(self.dataset_index),
-            'total_clips': total_clips,
+            'total_clips': len(self.dataset_index),
+            'total_actions': unique_actions,
             'has_annotations': self.load_annotations
         }
         
@@ -303,7 +355,7 @@ def create_mvfouls_datasets(
             dataset = MVFoulsDataset(root_dir, split=split, **kwargs)
             datasets[split] = dataset
             info = dataset.get_split_info()
-            print(f"Created {split} dataset with {len(dataset)} actions ({info['total_clips']} clips)")
+            print(f"Created {split} dataset with {len(dataset)} clips ({info['total_actions']} actions)")
         except Exception as e:
             print(f"Error creating {split} dataset: {e}")
     
@@ -336,9 +388,8 @@ if __name__ == "__main__":
             sample = train_dataset[2]
             print(f"\nSample from train dataset:")
             print(f"  Action ID: {sample['action_id']}")
-            print(f"  Number of clips: {sample['num_clips']}")
-            print(f"  Video shapes: {[video.shape for video in sample['videos']]}")
-            print(f"  Clip names: {sample['clip_names']}")
+            print(f"  Video shape: {sample['video'].shape}")
+            print(f"  Clip name: {sample['clip_name']}")
             if 'action_class' in sample:
                 print(f"  Action class: {sample['action_class']}")
                 print(f"  Severity: {sample['severity']}") 
