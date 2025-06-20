@@ -8,6 +8,13 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional, Union
 import glob
 
+# Import transforms (make sure this module is in the same directory)
+try:
+    from transforms import get_train_transforms, get_val_transforms, get_minimal_transforms
+except ImportError:
+    print("Warning: Could not import transforms. Make sure transforms.py is in the same directory.")
+    get_train_transforms = get_val_transforms = get_minimal_transforms = None
+
 
 class MVFoulsDataset(Dataset):
     """
@@ -58,6 +65,9 @@ class MVFoulsDataset(Dataset):
             max_frames (int): Maximum number of frames to load per video
             frame_rate (int): Target frame rate for video loading
             target_size (Tuple[int, int]): Optional target size for resizing frames
+                NOTE: If using transforms that include VideoResize, set this to None
+                to avoid double resizing. Use target_size for simple resizing without
+                transforms, or when transforms don't include VideoResize.
         """
         self.root_dir = Path(root_dir)
         self.split = split
@@ -226,20 +236,32 @@ class MVFoulsDataset(Dataset):
         finally:
             cap.release()
 
-        # If no frames could be read, return an empty array (caller may skip)
+        # If no frames could be read, return black frames with proper dimensions
         if not frames:
             print(f"Warning: No frames loaded from {video_path} (frames {start_frame}-{end_frame})")
-            # Return a black video of the correct shape instead of empty array
+            
+            # Determine frame size for black frames
             if self.target_size is not None:
                 h, w = self.target_size
-                black_frame = np.zeros((h, w, 3), dtype=np.uint8)
             else:
-                # Use a default size if no target_size is set
-                black_frame = np.zeros((224, 224, 3), dtype=np.uint8)
+                # Try to get frame size from video properties
+                cap_temp = cv2.VideoCapture(str(video_path))
+                frame_width = int(cap_temp.get(cv2.CAP_PROP_FRAME_WIDTH) or 224)
+                frame_height = int(cap_temp.get(cv2.CAP_PROP_FRAME_HEIGHT) or 224)
+                cap_temp.release()
+                h, w = frame_height, frame_width
+                
+                # If video properties are invalid, use default
+                if h <= 0 or w <= 0:
+                    h, w = 224, 224
+                    print(f"Warning: Could not determine video dimensions, using default {h}x{w}")
+            
+            # Create black frame with determined dimensions
+            black_frame = np.zeros((h, w, 3), dtype=np.uint8)
             
             # Create 32 black frames
             frames = [black_frame.copy() for _ in range(desired_frames)]
-            print(f"Warning: Using {desired_frames} black frames for {video_path}")
+            print(f"Warning: Using {desired_frames} black frames of size {h}x{w} for {video_path}")
             return np.stack(frames, axis=0)
 
         # Pad very short clips by repeating the last frame so that length == desired_frames
@@ -367,7 +389,7 @@ if __name__ == "__main__":
     # Example usage
     root_dir = "mvfouls"
     
-    # Create datasets for all splits
+    # Create datasets WITHOUT transforms first to show raw data
     datasets = create_mvfouls_datasets(root_dir, splits=['train', 'test', 'valid'])
     
     # Print dataset information
@@ -381,15 +403,66 @@ if __name__ == "__main__":
             print(f"  Number of action classes: {info['num_classes']}")
             print(f"  Action classes: {info['action_classes'][:5]}...")  # Show first 5
     
-    # Example: Load a single sample from train dataset
+    # Example: Load a single sample from train dataset (without transforms)
     if 'train' in datasets:
         train_dataset = datasets['train']
         if len(train_dataset) > 0:
             sample = train_dataset[2]
-            print(f"\nSample from train dataset:")
+            print(f"\nSample from train dataset (raw data):")
             print(f"  Action ID: {sample['action_id']}")
             print(f"  Video shape: {sample['video'].shape}")
+            print(f"  Video dtype: {sample['video'].dtype}")
+            print(f"  Video range: [{sample['video'].min()}, {sample['video'].max()}]")
             print(f"  Clip name: {sample['clip_name']}")
             if 'action_class' in sample:
                 print(f"  Action class: {sample['action_class']}")
-                print(f"  Severity: {sample['severity']}") 
+                print(f"  Severity: {sample['severity']}")
+    
+    # Example: Using datasets WITH transforms
+    if get_train_transforms and get_val_transforms:
+        print(f"\n{'='*50}")
+        print("CREATING DATASETS WITH TRANSFORMS")
+        print(f"{'='*50}")
+        
+        # Create train dataset with training transforms (augmentation)
+        train_transform = get_train_transforms(size=224)
+        train_dataset_transformed = MVFoulsDataset(
+            root_dir=root_dir,
+            split='train',
+            clip_selection='first',  # Use only first clip for faster testing
+            transform=train_transform,
+            target_size=None  # Let transforms handle resizing to avoid double resizing
+        )
+        
+        # Create validation dataset with validation transforms (no augmentation)
+        val_transform = get_val_transforms(size=224)
+        val_dataset_transformed = MVFoulsDataset(
+            root_dir=root_dir,
+            split='valid',
+            clip_selection='first',  # Use only first clip for faster testing
+            transform=val_transform,
+            target_size=None  # Let transforms handle resizing to avoid double resizing
+        )
+        
+        print(f"\nTrain dataset with transforms: {len(train_dataset_transformed)} clips")
+        print(f"Validation dataset with transforms: {len(val_dataset_transformed)} clips")
+        
+        # Test the transforms
+        if len(train_dataset_transformed) > 0:
+            sample_transformed = train_dataset_transformed[0]
+            print(f"\nTransformed sample (training):")
+            print(f"  Video shape: {sample_transformed['video'].shape}")
+            print(f"  Video dtype: {sample_transformed['video'].dtype}")
+            print(f"  Video range: [{sample_transformed['video'].min():.3f}, {sample_transformed['video'].max():.3f}]")
+            print(f"  Expected shape for models: (C=3, T=32, H=224, W=224)")
+            print(f"  Ready for Video Swin Transformer: {'✓' if sample_transformed['video'].shape == torch.Size([3, 32, 224, 224]) else '✗'}")
+        
+        if len(val_dataset_transformed) > 0:
+            sample_val = val_dataset_transformed[0]
+            print(f"\nTransformed sample (validation):")
+            print(f"  Video shape: {sample_val['video'].shape}")
+            print(f"  Video dtype: {sample_val['video'].dtype}")
+            print(f"  Video range: [{sample_val['video'].min():.3f}, {sample_val['video'].max():.3f}]")
+    
+    else:
+        print(f"\nTransforms not available. Make sure transforms.py is in the same directory.") 
