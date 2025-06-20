@@ -1,1 +1,5 @@
 SoccerNet
+torch
+torchvision
+opencv-python
+numpy

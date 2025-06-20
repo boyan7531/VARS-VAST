@@ -110,7 +110,7 @@ class MVFoulsDataset(Dataset):
         return action_dirs
     
     def _build_dataset_index(self) -> List[Dict]:
-        """Build index of all video clips in the dataset."""
+        """Build index of all actions in the dataset (grouped by action)."""
         dataset_index = []
         
         for action_dir in self.action_dirs:
@@ -123,18 +123,18 @@ class MVFoulsDataset(Dataset):
             if not video_files:
                 continue
                 
-            # Apply clip selection
+            # Apply clip selection to determine which clips to include
             selected_clips = self._select_clips(video_files)
             
-            for clip_path in selected_clips:
-                clip_info = {
+            if selected_clips:  # Only add if we have clips after selection
+                action_info = {
                     'action_id': action_id,
                     'action_dir': action_dir,
-                    'clip_path': clip_path,
-                    'clip_name': clip_path.name,
+                    'clip_paths': selected_clips,  # All selected clips for this action
+                    'clip_names': [clip.name for clip in selected_clips],
                     'annotations': self.annotations.get(action_id, {}) if self.load_annotations else {}
                 }
-                dataset_index.append(clip_info)
+                dataset_index.append(action_info)
         
         return dataset_index
     
@@ -190,30 +190,34 @@ class MVFoulsDataset(Dataset):
         return np.array(frames)  # Shape: (T, H, W, C)
     
     def __len__(self) -> int:
-        """Return the total number of clips in the dataset."""
+        """Return the total number of actions in the dataset."""
         return len(self.dataset_index)
     
     def __getitem__(self, idx: int) -> Dict:
-        """Get a single item from the dataset."""
+        """Get a single action from the dataset (with all its clips)."""
         if idx >= len(self.dataset_index):
             raise IndexError(f"Index {idx} out of range for dataset of size {len(self.dataset_index)}")
         
-        clip_info = self.dataset_index[idx]
+        action_info = self.dataset_index[idx]
         
-        # Load video
-        video = self._load_video(clip_info['clip_path'])
+        # Load all videos for this action
+        videos = []
+        for clip_path in action_info['clip_paths']:
+            video = self._load_video(clip_path)
+            videos.append(video)
         
         # Prepare the sample
         sample = {
-            'video': video,
-            'action_id': int(clip_info['action_id']),
-            'clip_name': clip_info['clip_name'],
-            'clip_path': str(clip_info['clip_path']),
+            'videos': videos,  # List of video arrays
+            'action_id': int(action_info['action_id']),
+            'clip_names': action_info['clip_names'],  # List of clip names
+            'clip_paths': [str(path) for path in action_info['clip_paths']],  # List of clip paths
+            'num_clips': len(videos)
         }
         
         # Add annotations if available
-        if self.load_annotations and clip_info['annotations']:
-            annotations = clip_info['annotations']
+        if self.load_annotations and action_info['annotations']:
+            annotations = action_info['annotations']
             sample.update({
                 'offence': annotations.get('Offence', ''),
                 'contact': annotations.get('Contact', ''),
@@ -253,10 +257,12 @@ class MVFoulsDataset(Dataset):
     
     def get_split_info(self) -> Dict:
         """Get information about the dataset split."""
+        total_clips = sum(len(item['clip_paths']) for item in self.dataset_index)
+        
         info = {
             'split': self.split,
-            'total_clips': len(self.dataset_index),
-            'total_actions': len(set(item['action_id'] for item in self.dataset_index)),
+            'total_actions': len(self.dataset_index),
+            'total_clips': total_clips,
             'has_annotations': self.load_annotations
         }
         
@@ -289,7 +295,8 @@ def create_mvfouls_datasets(
         try:
             dataset = MVFoulsDataset(root_dir, split=split, **kwargs)
             datasets[split] = dataset
-            print(f"Created {split} dataset with {len(dataset)} clips")
+            info = dataset.get_split_info()
+            print(f"Created {split} dataset with {len(dataset)} actions ({info['total_clips']} clips)")
         except Exception as e:
             print(f"Error creating {split} dataset: {e}")
     
@@ -319,11 +326,12 @@ if __name__ == "__main__":
     if 'train' in datasets:
         train_dataset = datasets['train']
         if len(train_dataset) > 0:
-            sample = train_dataset[0]
+            sample = train_dataset[2]
             print(f"\nSample from train dataset:")
             print(f"  Action ID: {sample['action_id']}")
-            print(f"  Video shape: {sample['video'].shape}")
-            print(f"  Clip name: {sample['clip_name']}")
+            print(f"  Number of clips: {sample['num_clips']}")
+            print(f"  Video shapes: {[video.shape for video in sample['videos']]}")
+            print(f"  Clip names: {sample['clip_names']}")
             if 'action_class' in sample:
                 print(f"  Action class: {sample['action_class']}")
                 print(f"  Severity: {sample['severity']}") 
