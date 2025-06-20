@@ -159,23 +159,27 @@ class MVFoulsDataset(Dataset):
             raise ValueError(f"Invalid clip_selection: {self.clip_selection}")
     
     def _load_video(self, video_path: Path) -> np.ndarray:
-        """Load video from file and return as numpy array."""
+        """Load video from file and return as numpy array (frames 59-90 inclusive)."""
         cap = cv2.VideoCapture(str(video_path))
         frames = []
+        start_frame = 59
+        end_frame = 90  # inclusive
+        num_frames_to_read = end_frame - start_frame + 1  # 32 frames
         
         try:
-            while True:
+            # Jump directly to start_frame for efficiency
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            
+            # Read exactly num_frames_to_read frames
+            for i in range(num_frames_to_read):
                 ret, frame = cap.read()
                 if not ret:
+                    print(f"Warning: Could not read frame {start_frame + i} from {video_path}")
                     break
                     
                 # Convert BGR to RGB
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frames.append(frame)
-                
-                # Limit number of frames if specified
-                if self.max_frames and len(frames) >= self.max_frames:
-                    break
                     
         except Exception as e:
             print(f"Error loading video {video_path}: {e}")
@@ -184,10 +188,13 @@ class MVFoulsDataset(Dataset):
             cap.release()
         
         if not frames:
-            print(f"Warning: No frames loaded from {video_path}")
+            print(f"Warning: No frames loaded from {video_path} (frames {start_frame}-{end_frame})")
             return np.array([])
+        
+        if len(frames) != num_frames_to_read:
+            print(f"Warning: Expected {num_frames_to_read} frames but got {len(frames)} from {video_path}")
             
-        return np.array(frames)  # Shape: (T, H, W, C)
+        return np.array(frames)  # Shape: (32, H, W, C) - frames 59-90
     
     def __len__(self) -> int:
         """Return the total number of actions in the dataset."""
