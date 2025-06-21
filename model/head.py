@@ -7,13 +7,22 @@ import pandas as pd
 
 # Import task metadata utilities
 try:
-    from utils import get_task_metadata, get_task_class_weights, concat_task_logits, split_concat_logits
+    from utils import (
+        get_task_metadata, get_task_class_weights, concat_task_logits, split_concat_logits,
+        compute_task_metrics, compute_confusion_matrices, compute_task_weights_from_metrics,
+        format_metrics_table, compute_overall_metrics
+    )
 except ImportError:
     # Fallback if utils not available
     get_task_metadata = None
     get_task_class_weights = None
     concat_task_logits = None
     split_concat_logits = None
+    compute_task_metrics = None
+    compute_confusion_matrices = None
+    compute_task_weights_from_metrics = None
+    format_metrics_table = None
+    compute_overall_metrics = None
 
 
 class AttentionPool(nn.Module):
@@ -520,6 +529,105 @@ class MVFoulsHead(nn.Module):
         loss_dict['total_loss'] = total_loss
         return loss_dict
     
+    def compute_unified_loss(
+        self,
+        logits_dict: Dict[str, torch.Tensor],
+        targets_dict: Dict[str, torch.Tensor],
+        weighting_strategy: str = 'uniform',
+        focal_gamma: float = 2.0,
+        adaptive_weights: bool = False,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Unified loss computation with advanced weighting strategies.
+        
+        Args:
+            logits_dict: Dict mapping task names to logits tensors
+            targets_dict: Dict mapping task names to target tensors
+            weighting_strategy: Strategy for task weighting
+            focal_gamma: Gamma parameter for focal loss
+            adaptive_weights: If True, compute weights based on current performance
+            
+        Returns:
+            loss_dict: Dict with comprehensive loss information
+        """
+        # First compute basic multi-task loss
+        loss_dict = self.compute_multi_task_loss(
+            logits_dict, targets_dict, None, focal_gamma, **kwargs
+        )
+        
+        # Compute advanced metrics if available
+        if compute_task_metrics is not None:
+            with torch.no_grad():
+                metrics = compute_task_metrics(logits_dict, targets_dict, self.task_names)
+                loss_dict['metrics'] = metrics
+                
+                # Compute overall metrics
+                if compute_overall_metrics is not None:
+                    overall_metrics = compute_overall_metrics(metrics)
+                    loss_dict['overall_metrics'] = overall_metrics
+        
+        # Adaptive weighting based on performance
+        if adaptive_weights and 'metrics' in loss_dict:
+            if compute_task_weights_from_metrics is not None:
+                adaptive_task_weights = compute_task_weights_from_metrics(
+                    loss_dict['metrics'], weighting_strategy
+                )
+                
+                # Recompute weighted losses with adaptive weights
+                total_loss_adaptive = 0.0
+                for task_name in self.task_names:
+                    if f'{task_name}_loss' in loss_dict:
+                        task_loss = loss_dict[f'{task_name}_loss']
+                        adaptive_weight = adaptive_task_weights.get(task_name, 1.0)
+                        weighted_loss = task_loss * adaptive_weight
+                        loss_dict[f'{task_name}_adaptive_loss'] = weighted_loss
+                        total_loss_adaptive += weighted_loss
+                
+                loss_dict['total_loss_adaptive'] = total_loss_adaptive
+                loss_dict['adaptive_weights'] = adaptive_task_weights
+        
+        return loss_dict
+    
+    def compute_comprehensive_metrics(
+        self,
+        logits_dict: Dict[str, torch.Tensor],
+        targets_dict: Dict[str, torch.Tensor]
+    ) -> Dict[str, Any]:
+        """
+        Compute comprehensive metrics including confusion matrices.
+        
+        Args:
+            logits_dict: Dict mapping task names to logits tensors
+            targets_dict: Dict mapping task names to target tensors
+            
+        Returns:
+            Dict with metrics, confusion matrices, and formatted tables
+        """
+        results = {}
+        
+        if compute_task_metrics is not None:
+            # Compute detailed metrics
+            metrics = compute_task_metrics(logits_dict, targets_dict, self.task_names)
+            results['metrics'] = metrics
+            
+            # Compute overall metrics
+            if compute_overall_metrics is not None:
+                overall_metrics = compute_overall_metrics(metrics)
+                results['overall_metrics'] = overall_metrics
+            
+            # Format metrics table
+            if format_metrics_table is not None:
+                metrics_table = format_metrics_table(metrics)
+                results['metrics_table'] = metrics_table
+        
+        if compute_confusion_matrices is not None:
+            # Compute confusion matrices
+            confusion_matrices = compute_confusion_matrices(logits_dict, targets_dict, self.task_names)
+            results['confusion_matrices'] = confusion_matrices
+        
+        return results
+    
     def _focal_loss(
         self, 
         logits: torch.Tensor, 
@@ -569,6 +677,89 @@ class MVFoulsHead(nn.Module):
                     confusion_matrix = getattr(self, confusion_attr)
                     for t, p in zip(targets.view(-1), preds.view(-1)):
                         confusion_matrix[t.long(), p.long()] += 1
+    
+    def get_task_performance_summary(self) -> Dict[str, Any]:
+        """
+        Get a summary of current task performance.
+        
+        Returns:
+            Dict with performance summary for each task
+        """
+        summary = {}
+        
+        if self.multi_task:
+            for task_name in self.task_names:
+                task_summary = {}
+                
+                # Running accuracy
+                acc_attr = f'running_acc_{task_name}'
+                if hasattr(self, acc_attr):
+                    task_summary['running_accuracy'] = getattr(self, acc_attr).item()
+                
+                # Confusion matrix stats
+                cm_attr = f'confusion_matrix_{task_name}'
+                if hasattr(self, cm_attr):
+                    cm = getattr(self, cm_attr)
+                    total_samples = cm.sum().item()
+                    if total_samples > 0:
+                        diagonal_sum = cm.diag().sum().item()
+                        task_summary['confusion_matrix_accuracy'] = diagonal_sum / total_samples
+                        task_summary['total_samples'] = total_samples
+                
+                summary[task_name] = task_summary
+        else:
+            # Single task summary
+            summary['default'] = {
+                'running_accuracy': self.running_acc.item(),
+                'confusion_matrix_accuracy': self.confusion_matrix.diag().sum().item() / max(self.confusion_matrix.sum().item(), 1),
+                'total_samples': self.confusion_matrix.sum().item()
+            }
+        
+        return summary
+    
+    def reset_metrics(self):
+        """Reset all metrics to zero."""
+        if self.multi_task:
+            for task_name in self.task_names:
+                acc_attr = f'running_acc_{task_name}'
+                cm_attr = f'confusion_matrix_{task_name}'
+                
+                if hasattr(self, acc_attr):
+                    getattr(self, acc_attr).zero_()
+                if hasattr(self, cm_attr):
+                    getattr(self, cm_attr).zero_()
+        else:
+            self.running_acc.zero_()
+            self.confusion_matrix.zero_()
+    
+    def print_performance_summary(self):
+        """Print a formatted performance summary."""
+        summary = self.get_task_performance_summary()
+        
+        print("\n" + "="*60)
+        print("📊 TASK PERFORMANCE SUMMARY")
+        print("="*60)
+        
+        if self.multi_task:
+            for task_name, task_summary in summary.items():
+                print(f"\n🎯 {task_name.upper()}")
+                print("-" * 30)
+                
+                if 'running_accuracy' in task_summary:
+                    print(f"  Running Accuracy: {task_summary['running_accuracy']:.4f}")
+                
+                if 'confusion_matrix_accuracy' in task_summary:
+                    print(f"  CM Accuracy:      {task_summary['confusion_matrix_accuracy']:.4f}")
+                
+                if 'total_samples' in task_summary:
+                    print(f"  Total Samples:    {task_summary['total_samples']}")
+        else:
+            task_summary = summary['default']
+            print(f"Running Accuracy:     {task_summary['running_accuracy']:.4f}")
+            print(f"CM Accuracy:          {task_summary['confusion_matrix_accuracy']:.4f}")
+            print(f"Total Samples:        {task_summary['total_samples']}")
+        
+        print("="*60)
     
     def print_structure(self):
         """Print model structure with parameter counts."""

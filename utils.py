@@ -581,6 +581,306 @@ def test_task_metadata():
         raise
 
 
+def compute_task_metrics(
+    logits_dict: Dict[str, torch.Tensor], 
+    targets_dict: Dict[str, torch.Tensor],
+    task_names: Optional[List[str]] = None
+) -> Dict[str, Dict[str, float]]:
+    """
+    Compute comprehensive metrics for each task.
+    
+    Args:
+        logits_dict: Dict mapping task names to logits tensors (B, num_classes)
+        targets_dict: Dict mapping task names to target tensors (B,)
+        task_names: Optional list of task names to compute metrics for
+        
+    Returns:
+        Dict mapping task names to metrics dict with keys:
+        - accuracy, precision, recall, f1_score, top1_acc, top3_acc (if applicable)
+    """
+    if task_names is None:
+        task_names = list(logits_dict.keys())
+    
+    metrics = {}
+    
+    for task_name in task_names:
+        if task_name not in logits_dict or task_name not in targets_dict:
+            continue
+            
+        logits = logits_dict[task_name]  # (B, num_classes)
+        targets = targets_dict[task_name]  # (B,)
+        
+        # Get predictions
+        preds = torch.argmax(logits, dim=1)  # (B,)
+        probs = torch.softmax(logits, dim=1)  # (B, num_classes)
+        
+        num_classes = logits.shape[1]
+        batch_size = logits.shape[0]
+        
+        # Basic accuracy
+        correct = (preds == targets).float()
+        accuracy = correct.mean().item()
+        
+        # Per-class metrics
+        precision_per_class = []
+        recall_per_class = []
+        f1_per_class = []
+        
+        for cls in range(num_classes):
+            # True positives, false positives, false negatives
+            tp = ((preds == cls) & (targets == cls)).float().sum().item()
+            fp = ((preds == cls) & (targets != cls)).float().sum().item()
+            fn = ((preds != cls) & (targets == cls)).float().sum().item()
+            
+            # Precision and recall
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+            
+            precision_per_class.append(precision)
+            recall_per_class.append(recall)
+            f1_per_class.append(f1)
+        
+        # Macro averages
+        macro_precision = sum(precision_per_class) / len(precision_per_class)
+        macro_recall = sum(recall_per_class) / len(recall_per_class)
+        macro_f1 = sum(f1_per_class) / len(f1_per_class)
+        
+        # Top-k accuracy (if more than 3 classes)
+        top1_acc = accuracy
+        top3_acc = None
+        if num_classes >= 3:
+            _, top3_preds = torch.topk(probs, min(3, num_classes), dim=1)
+            top3_correct = torch.any(top3_preds == targets.unsqueeze(1), dim=1).float()
+            top3_acc = top3_correct.mean().item()
+        
+        # Store metrics
+        task_metrics = {
+            'accuracy': accuracy,
+            'macro_precision': macro_precision,
+            'macro_recall': macro_recall,
+            'macro_f1': macro_f1,
+            'top1_acc': top1_acc,
+        }
+        
+        if top3_acc is not None:
+            task_metrics['top3_acc'] = top3_acc
+            
+        # Add per-class metrics
+        task_metrics['precision_per_class'] = precision_per_class
+        task_metrics['recall_per_class'] = recall_per_class
+        task_metrics['f1_per_class'] = f1_per_class
+        
+        metrics[task_name] = task_metrics
+    
+    return metrics
+
+
+def compute_confusion_matrices(
+    logits_dict: Dict[str, torch.Tensor],
+    targets_dict: Dict[str, torch.Tensor],
+    task_names: Optional[List[str]] = None
+) -> Dict[str, torch.Tensor]:
+    """
+    Compute confusion matrices for each task.
+    
+    Args:
+        logits_dict: Dict mapping task names to logits tensors
+        targets_dict: Dict mapping task names to target tensors
+        task_names: Optional list of task names
+        
+    Returns:
+        Dict mapping task names to confusion matrices
+    """
+    if task_names is None:
+        task_names = list(logits_dict.keys())
+    
+    confusion_matrices = {}
+    
+    for task_name in task_names:
+        if task_name not in logits_dict or task_name not in targets_dict:
+            continue
+            
+        logits = logits_dict[task_name]
+        targets = targets_dict[task_name]
+        
+        preds = torch.argmax(logits, dim=1)
+        num_classes = logits.shape[1]
+        
+        # Compute confusion matrix
+        cm = torch.zeros(num_classes, num_classes, dtype=torch.long)
+        for t, p in zip(targets.view(-1), preds.view(-1)):
+            cm[t.long(), p.long()] += 1
+            
+        confusion_matrices[task_name] = cm
+    
+    return confusion_matrices
+
+
+def compute_task_weights_from_metrics(
+    metrics_dict: Dict[str, Dict[str, float]],
+    weighting_strategy: str = 'inverse_accuracy'
+) -> Dict[str, float]:
+    """
+    Compute task weights based on performance metrics.
+    
+    Args:
+        metrics_dict: Dict from compute_task_metrics
+        weighting_strategy: Strategy for computing weights
+            - 'inverse_accuracy': Weight inversely proportional to accuracy
+            - 'inverse_f1': Weight inversely proportional to F1 score
+            - 'uniform': Equal weights for all tasks
+            - 'difficulty': Based on number of classes and performance
+            
+    Returns:
+        Dict mapping task names to weights
+    """
+    task_names = list(metrics_dict.keys())
+    
+    if weighting_strategy == 'uniform':
+        return {task: 1.0 for task in task_names}
+    
+    weights = {}
+    
+    if weighting_strategy == 'inverse_accuracy':
+        for task_name in task_names:
+            acc = metrics_dict[task_name]['accuracy']
+            # Inverse accuracy with smoothing
+            weights[task_name] = 1.0 / (acc + 0.1)  # Add small epsilon
+            
+    elif weighting_strategy == 'inverse_f1':
+        for task_name in task_names:
+            f1 = metrics_dict[task_name]['macro_f1']
+            weights[task_name] = 1.0 / (f1 + 0.1)
+            
+    elif weighting_strategy == 'difficulty':
+        # Combine number of classes and performance
+        metadata = get_task_metadata()
+        for i, task_name in enumerate(task_names):
+            if task_name in metadata['task_names']:
+                task_idx = metadata['task_names'].index(task_name)
+                num_classes = metadata['num_classes'][task_idx]
+                acc = metrics_dict[task_name]['accuracy']
+                
+                # Weight based on difficulty (more classes = harder, lower acc = harder)
+                class_difficulty = num_classes / 10.0  # Normalize by max classes
+                acc_difficulty = 1.0 - acc
+                weights[task_name] = class_difficulty + acc_difficulty
+            else:
+                weights[task_name] = 1.0
+    else:
+        raise ValueError(f"Unknown weighting strategy: {weighting_strategy}")
+    
+    # Normalize weights to sum to number of tasks
+    total_weight = sum(weights.values())
+    num_tasks = len(weights)
+    for task_name in weights:
+        weights[task_name] = weights[task_name] / total_weight * num_tasks
+    
+    return weights
+
+
+def format_metrics_table(
+    metrics_dict: Dict[str, Dict[str, float]],
+    precision: int = 4
+) -> str:
+    """
+    Format metrics as a readable table string.
+    
+    Args:
+        metrics_dict: Dict from compute_task_metrics
+        precision: Number of decimal places
+        
+    Returns:
+        Formatted table string
+    """
+    if not metrics_dict:
+        return "No metrics available"
+    
+    # Get all metric keys
+    all_keys = set()
+    for task_metrics in metrics_dict.values():
+        all_keys.update(task_metrics.keys())
+    
+    # Remove per-class metrics from main table
+    main_keys = [k for k in all_keys if not k.endswith('_per_class')]
+    main_keys = sorted(main_keys)
+    
+    # Create table
+    lines = []
+    
+    # Header
+    header = f"{'Task':<20} " + " ".join(f"{key:>12}" for key in main_keys)
+    lines.append(header)
+    lines.append("-" * len(header))
+    
+    # Rows
+    for task_name in sorted(metrics_dict.keys()):
+        task_metrics = metrics_dict[task_name]
+        row = f"{task_name:<20} "
+        
+        for key in main_keys:
+            if key in task_metrics:
+                value = task_metrics[key]
+                if value is None:
+                    row += f"{'N/A':>12} "
+                else:
+                    row += f"{value:>12.{precision}f} "
+            else:
+                row += f"{'N/A':>12} "
+        
+        lines.append(row.rstrip())
+    
+    return "\n".join(lines)
+
+
+def compute_overall_metrics(metrics_dict: Dict[str, Dict[str, float]]) -> Dict[str, float]:
+    """
+    Compute overall metrics across all tasks.
+    
+    Args:
+        metrics_dict: Dict from compute_task_metrics
+        
+    Returns:
+        Dict with overall metrics (mean, std, etc.)
+    """
+    if not metrics_dict:
+        return {}
+    
+    # Collect all metric values
+    all_accuracies = []
+    all_precisions = []
+    all_recalls = []
+    all_f1s = []
+    
+    for task_metrics in metrics_dict.values():
+        all_accuracies.append(task_metrics['accuracy'])
+        all_precisions.append(task_metrics['macro_precision'])
+        all_recalls.append(task_metrics['macro_recall'])
+        all_f1s.append(task_metrics['macro_f1'])
+    
+    # Convert to tensors for easy computation
+    accuracies = torch.tensor(all_accuracies)
+    precisions = torch.tensor(all_precisions)
+    recalls = torch.tensor(all_recalls)
+    f1s = torch.tensor(all_f1s)
+    
+    overall_metrics = {
+        'mean_accuracy': accuracies.mean().item(),
+        'std_accuracy': accuracies.std().item(),
+        'mean_precision': precisions.mean().item(),
+        'std_precision': precisions.std().item(),
+        'mean_recall': recalls.mean().item(),
+        'std_recall': recalls.std().item(),
+        'mean_f1': f1s.mean().item(),
+        'std_f1': f1s.std().item(),
+        'min_accuracy': accuracies.min().item(),
+        'max_accuracy': accuracies.max().item(),
+    }
+    
+    return overall_metrics
+
+
 if __name__ == "__main__":
     test_class_weights()
     print()
