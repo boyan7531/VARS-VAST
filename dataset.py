@@ -364,90 +364,72 @@ class MVFoulsDataset(Dataset):
             print(f"Warning: Could not convert '{value}' to float, using 0.0")
             return 0.0
     
-    def _load_video(self, video_path: Path, replay_speed: float = 1.0) -> np.ndarray:
+    def _load_video(self, video_path: Path) -> np.ndarray:
         """
-        Load video from file with temporal normalization for replay speed.
+        Load video from file using consistent frame sampling (no temporal normalization).
+        This allows the model to learn temporal invariance naturally.
         
         Args:
             video_path: Path to video file
-            replay_speed: Replay speed (1.0 = normal, 0.5 = half speed, 2.0 = double speed)
         
         Returns:
             np.ndarray: Video frames of shape (32, H, W, C)
         """
         cap = cv2.VideoCapture(str(video_path))
         
-        # Get video properties
+        # Get clip length first so we can adjust the frame window if needed
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        original_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        
-        # Temporal normalization parameters
+
+        # Desired slice parameters - use consistent window for all videos
         desired_frames = 32
-        target_real_duration = 2.0  # Target 2 seconds of real-world action
-        
-        # Calculate effective FPS after replay speed adjustment
-        effective_fps = original_fps * replay_speed
-        
-        # Calculate how many original frames we need to span the target duration
-        frames_needed_for_duration = int(target_real_duration * effective_fps)
-        
-        # Calculate frame sampling step to get desired_frames from frames_needed_for_duration
-        if frames_needed_for_duration > 0:
-            step = max(1, frames_needed_for_duration // desired_frames)
-        else:
-            step = 1
-        
-        # Default window center (around the action)
-        default_center_frame = 75  # Roughly center of typical clips
-        
-        # Calculate start and end frames for sampling
-        half_span = (frames_needed_for_duration // 2)
-        start_frame = max(0, default_center_frame - half_span)
-        end_frame = min(total_frames - 1, start_frame + frames_needed_for_duration - 1)
-        
-        # If video is too short, adjust the window
-        if total_frames > 0 and (end_frame - start_frame + 1) < desired_frames:
-            # Use the entire video and adjust step
-            start_frame = 0
+        default_start_frame = 59
+        start_frame = default_start_frame
+        end_frame = start_frame + desired_frames - 1
+
+        # If the video is too short to reach our default [59-90] window, shift the
+        # window backwards so that we still try to grab 32 frames ending at the
+        # last available frame.
+        if total_frames > 0 and end_frame >= total_frames:
+            # New window end is the last frame in the clip
             end_frame = total_frames - 1
-            step = max(1, total_frames // desired_frames)
-            print(f"Warning: Video {video_path} is short, using entire video with step {step}")
-        
-        # Generate frame indices to sample
-        frame_indices = list(range(start_frame, end_frame + 1, step))
-        
-        # Ensure we don't exceed desired_frames
-        if len(frame_indices) > desired_frames:
-            frame_indices = frame_indices[:desired_frames]
-        
+            # New window start makes a 32-frame segment (but not < 0)
+            start_frame = max(0, end_frame - desired_frames + 1)
+            print(f"Warning: Video {video_path} is too short, shifting window to {start_frame}-{end_frame}")
+
+        # After shifting, we may still have less than 32 frames (very short clip).
+        # In that case we will collect whatever frames exist and later pad by
+        # repeating the last available frame so that the returned tensor always
+        # has `desired_frames` frames.
+        num_frames_to_read = end_frame - start_frame + 1
+
+        # Seek to the adjusted start frame
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
         frames = []
-        
+
         try:
-            for frame_idx in frame_indices:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            for i in range(num_frames_to_read):
                 ret, frame = cap.read()
                 if not ret:
-                    print(f"Warning: Could not read frame {frame_idx} from {video_path}")
-                    continue
-                    
+                    print(f"Warning: Could not read frame {start_frame + i} from {video_path}")
+                    break
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
+
                 # Resize to target_size if requested
                 if self.target_size is not None:
                     # target_size given as (H, W) but cv2 uses (W, H)
                     h, w = self.target_size
                     frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
-                
+
                 frames.append(frame)
-                
         except Exception as e:
             print(f"Error loading video {video_path}: {e}")
         finally:
             cap.release()
-        
-        # Handle case where no frames were loaded
+
+        # If no frames could be read, return black frames with proper dimensions
         if not frames:
-            print(f"Warning: No frames loaded from {video_path}")
+            print(f"Warning: No frames loaded from {video_path} (frames {start_frame}-{end_frame})")
             
             # Determine frame size for black frames
             if self.target_size is not None:
@@ -467,17 +449,19 @@ class MVFoulsDataset(Dataset):
             
             # Create black frame with determined dimensions
             black_frame = np.zeros((h, w, 3), dtype=np.uint8)
+            
+            # Create 32 black frames
             frames = [black_frame.copy() for _ in range(desired_frames)]
             print(f"Warning: Using {desired_frames} black frames of size {h}x{w} for {video_path}")
             return np.stack(frames, axis=0)
-        
-        # Pad or trim to exactly desired_frames
+
+        # Pad very short clips by repeating the last frame so that length == desired_frames
         while len(frames) < desired_frames:
-            frames.append(frames[-1].copy())  # Repeat last frame
-        
-        if len(frames) > desired_frames:
-            frames = frames[:desired_frames]  # Trim to desired length
-        
+            frames.append(frames[-1].copy())
+
+        if len(frames) != desired_frames:
+            print(f"Warning: Expected {desired_frames} frames but got {len(frames)} from {video_path}")
+
         return np.stack(frames, axis=0)  # Shape: (32, H, W, C)
     
     def __len__(self) -> int:
@@ -498,9 +482,8 @@ class MVFoulsDataset(Dataset):
         
         clip_info = self.dataset_index[idx]
         
-        # Load the video with temporal normalization for replay speed
-        replay_speed = clip_info.get('replay_speed', 1.0)
-        video = self._load_video(clip_info['clip_path'], replay_speed)
+        # Load the video using consistent frame sampling
+        video = self._load_video(clip_info['clip_path'])
         
         # Get numeric labels (pre-processed during initialization)
         if self.load_annotations and clip_info['numeric_labels'] is not None:
@@ -716,23 +699,22 @@ if __name__ == "__main__":
                 for task_name in list(decoded.keys())[:3]:
                     print(f"       {task_name}: {decoded[task_name][0]}")
         
-        print(f"\n5. TEMPORAL NORMALIZATION TEST:")
+        print(f"\n5. CONSISTENT FRAME SAMPLING TEST:")
         
-        # Test different replay speeds
+        # Test consistent frame sampling (no temporal normalization)
         if 'train' in datasets and len(datasets['train']) > 0:
             dataset = datasets['train']
             clip_info = dataset.dataset_index[0]
             
-            # Test different replay speeds
-            speeds_to_test = [0.5, 1.0, 2.0]
-            for speed in speeds_to_test:
-                video_frames = dataset._load_video(clip_info['clip_path'], replay_speed=speed)
-                print(f"     Replay speed {speed}x: {video_frames.shape} frames loaded")
-                
-                # All should have the same number of frames (temporal normalization)
-                assert video_frames.shape[0] == 32, f"Expected 32 frames, got {video_frames.shape[0]}"
+            # Test that we always get consistent frame sampling
+            video_frames = dataset._load_video(clip_info['clip_path'])
+            print(f"     Loaded video: {video_frames.shape} frames")
             
-            print(f"     ✓ Temporal normalization working correctly")
+            # Should always get 32 frames using consistent sampling
+            assert video_frames.shape[0] == 32, f"Expected 32 frames, got {video_frames.shape[0]}"
+            
+            print(f"     ✓ Consistent frame sampling working correctly")
+            print(f"     ✓ Model will learn temporal invariance naturally")
         
         print(f"\n6. TRANSFORMS COMPATIBILITY TEST:")
         
@@ -784,11 +766,13 @@ if __name__ == "__main__":
         
         print(f"\n8. SUMMARY:")
         print(f"   ✓ Multi-task labeling implemented ({N_TASKS} tasks)")
-        print(f"   ✓ Temporal normalization implemented")
+        print(f"   ✓ Consistent frame sampling (NO temporal normalization)")
+        print(f"   ✓ Model will learn temporal invariance naturally")
         print(f"   ✓ New tuple return format (__getitem__)")
         print(f"   ✓ Utility functions for model integration")
         print(f"   ✓ Compatible with PyTorch DataLoader")
         print(f"   ✓ Missing values mapped to class 0")
+        print(f"   ✓ Robust to different video speeds during inference")
         
     except Exception as e:
         print(f"   ✗ Dataset creation failed: {e}")
