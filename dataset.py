@@ -44,7 +44,6 @@ class MVFoulsDataset(Dataset):
         self,
         root_dir: str,
         split: str = 'train',
-        clip_selection: str = 'all',  # 'all', 'first', 'last', or int index
         transform=None,
         load_annotations: bool = True,
         max_frames: Optional[int] = None,
@@ -55,11 +54,6 @@ class MVFoulsDataset(Dataset):
         Args:
             root_dir (str): Path to mvfouls directory
             split (str): One of 'train', 'test', 'valid', 'challenge'
-            clip_selection (str or int): How to select clips from each action
-                - 'all': return all clips for each action
-                - 'first': return only the first clip
-                - 'last': return only the last clip
-                - int: return clip at specific index
             transform: Optional transform to be applied on video frames
             load_annotations (bool): Whether to load annotations (False for challenge)
             max_frames (int): Maximum number of frames to load per video
@@ -71,7 +65,6 @@ class MVFoulsDataset(Dataset):
         """
         self.root_dir = Path(root_dir)
         self.split = split
-        self.clip_selection = clip_selection
         self.transform = transform
         self.load_annotations = load_annotations and split != 'challenge'
         self.max_frames = max_frames
@@ -136,11 +129,8 @@ class MVFoulsDataset(Dataset):
             if not video_files:
                 continue
                 
-            # Apply clip selection to determine which clips to include
-            selected_clips = self._select_clips(video_files)
-            
-            # Create a separate entry for each individual clip
-            for clip_path in selected_clips:
+            # Create a separate entry for each individual clip (always use all clips)
+            for clip_path in video_files:
                 clip_info = {
                     'action_id': action_id,
                     'action_dir': action_dir,
@@ -151,26 +141,6 @@ class MVFoulsDataset(Dataset):
                 dataset_index.append(clip_info)
         
         return dataset_index
-    
-    def _select_clips(self, video_files: List[Path]) -> List[Path]:
-        """Select clips based on clip_selection parameter."""
-        if not video_files:
-            return []
-            
-        if self.clip_selection == 'all':
-            return video_files
-        elif self.clip_selection == 'first':
-            return [video_files[0]]
-        elif self.clip_selection == 'last':
-            return [video_files[-1]]
-        elif isinstance(self.clip_selection, int):
-            idx = self.clip_selection
-            if 0 <= idx < len(video_files):
-                return [video_files[idx]]
-            else:
-                return []
-        else:
-            raise ValueError(f"Invalid clip_selection: {self.clip_selection}")
     
     def _safe_float_conversion(self, value) -> float:
         """Safely convert a value to float, handling empty strings and invalid values."""
@@ -429,7 +399,6 @@ if __name__ == "__main__":
         train_dataset_transformed = MVFoulsDataset(
             root_dir=root_dir,
             split='train',
-            clip_selection='first',  # Use only first clip for faster testing
             transform=train_transform,
             target_size=None  # Let transforms handle resizing to avoid double resizing
         )
@@ -439,7 +408,6 @@ if __name__ == "__main__":
         val_dataset_transformed = MVFoulsDataset(
             root_dir=root_dir,
             split='valid',
-            clip_selection='first',  # Use only first clip for faster testing
             transform=val_transform,
             target_size=None  # Let transforms handle resizing to avoid double resizing
         )
