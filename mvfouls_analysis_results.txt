@@ -1,0 +1,217 @@
+================================================================================
+MVFOULS DATASET COMPREHENSIVE ANALYSIS
+================================================================================
+
+Dataset Overview:
+  Set: train
+  Total Actions: 2916
+
+============================================================
+ATTRIBUTE ANALYSIS
+============================================================
+
+ACTION CLASS:
+  Total samples: 2916
+  Unique values: 10
+  Missing/Empty: 11
+  Distribution:
+    Standing tackling         | 1264 (43.3%)
+    Tackling                  |  448 (15.4%)
+    Challenge                 |  383 (13.1%)
+    Holding                   |  361 (12.4%)
+    Elbowing                  |  178 (6.1%)
+    High leg                  |  103 (3.5%)
+    Pushing                   |   88 (3.0%)
+    Dont know                 |   52 (1.8%)
+    Dive                      |   28 (1.0%)
+    Missing/Empty             |   11 (0.4%)
+
+SEVERITY:
+  Total samples: 2916
+  Unique values: 6
+  Missing/Empty: 353
+  Distribution:
+    1                         | 1402 (48.1%)
+    3                         |  687 (23.6%)
+    2                         |  403 (13.8%)
+    Missing                   |  353 (12.1%)
+    4                         |   44 (1.5%)
+    5                         |   27 (0.9%)
+
+OFFENCE:
+  Total samples: 2916
+  Unique values: 4
+  Missing/Empty: 1
+  Distribution:
+    Offence                   | 2495 (85.6%)
+    No offence                |  324 (11.1%)
+    Between                   |   96 (3.3%)
+    Missing/Empty             |    1 (0.0%)
+
+CONTACT:
+  Total samples: 2916
+  Unique values: 2
+  Missing/Empty: 0
+  Distribution:
+    With contact              | 2835 (97.2%)
+    Without contact           |   81 (2.8%)
+
+BODYPART:
+  Total samples: 2916
+  Unique values: 3
+  Missing/Empty: 37
+  Distribution:
+    Under body                | 1831 (62.8%)
+    Upper body                | 1048 (35.9%)
+    Missing/Empty             |   37 (1.3%)
+
+UPPER BODY PART:
+  Total samples: 2916
+  Unique values: 4
+  Missing/Empty: 1899
+  Distribution:
+    Missing/Empty             | 1899 (65.1%)
+    Use of arms               |  670 (23.0%)
+    Use of shoulder           |  332 (11.4%)
+    Use of shoulders          |   15 (0.5%)
+
+MULTIPLE FOULS:
+  Total samples: 2916
+  Unique values: 4
+  Missing/Empty: 377
+  Distribution:
+    No                        | 2234 (76.6%)
+    Missing/Empty             |  377 (12.9%)
+    Yes                       |  304 (10.4%)
+    yes                       |    1 (0.0%)
+
+TRY TO PLAY:
+  Total samples: 2916
+  Unique values: 3
+  Missing/Empty: 1133
+  Distribution:
+    Yes                       | 1650 (56.6%)
+    Missing/Empty             | 1133 (38.9%)
+    No                        |  133 (4.6%)
+
+TOUCH BALL:
+  Total samples: 2916
+  Unique values: 4
+  Missing/Empty: 1135
+  Distribution:
+    No                        | 1543 (52.9%)
+    Missing/Empty             | 1135 (38.9%)
+    Yes                       |  192 (6.6%)
+    Maybe                     |   46 (1.6%)
+
+HANDBALL:
+  Total samples: 2916
+  Unique values: 2
+  Missing/Empty: 0
+  Distribution:
+    No handball               | 2892 (99.2%)
+    Handball                  |   24 (0.8%)
+
+HANDBALL OFFENCE:
+  Total samples: 2916
+  Unique values: 3
+  Missing/Empty: 2892
+  Distribution:
+    Missing/Empty             | 2892 (99.2%)
+    Offence                   |   18 (0.6%)
+    No offence                |    6 (0.2%)
+
+============================================================
+CLIPS METADATA ANALYSIS
+============================================================
+
+Clips per Action:
+  Total clips: 6621
+  Average clips per action: 2.27
+  Min clips per action: 2
+  Max clips per action: 4
+
+Clips per Action Distribution:
+  2 clips: 2241 actions
+  3 clips: 561 actions
+  4 clips: 114 actions
+
+Camera Types:
+  Close-up player or field referee: 3331
+  Main camera center: 2935
+  Close-up behind the goal: 124
+  Main behind the goal: 64
+  Main camera left: 48
+  Spider camera: 39
+  Main camera right: 37
+  Other: 27
+  Goal line technology camera: 11
+  Close-up corner: 2
+  Inside the goal: 2
+  Close-up side staff: 1
+
+Replay Speeds:
+  1.0x: 3611
+  1.8x: 548
+  1.4x: 486
+  2.6x: 348
+  2.2x: 227
+  2.4x: 215
+  2.8x: 211
+  2.0x: 197
+  1.2x: 159
+  3.0x: 155
+  1.6x: 145
+  3.2x: 68
+  3.6x: 34
+  3.4x: 27
+  4.0x: 25
+  5.0x: 24
+  7.0x: 20
+  4.4x: 19
+  10.0x: 19
+  8.0x: 18
+  6.0x: 18
+  3.8x: 11
+  9.0x: 11
+  4.2x: 10
+  4.8x: 4
+  4.6x: 4
+  1.9x: 4
+  1.7x: 2
+  1.3x: 1
+
+================================================================================
+MODEL PREDICTION RECOMMENDATIONS
+================================================================================
+
+1. ACTION CLASS PREDICTION:
+   Number of classes: 10
+   Missing values: 11
+   Class imbalance ratio: 45.1:1
+   ⚠️  SEVERE IMBALANCE - Consider class weights or focal loss
+
+2. SEVERITY PREDICTION:
+   Number of severity levels: 6
+   Missing values: 353
+   Severity range: 1 - 5
+   Severity imbalance ratio: 51.9:1
+   ⚠️  SEVERE IMBALANCE - Use effective number weights + focal loss
+
+3. MULTI-TASK LEARNING RECOMMENDATION:
+   Primary tasks: Action Class + Severity
+   Auxiliary tasks: Contact, Bodypart, Offence (for regularization)
+   Architecture: Shared backbone + separate heads per task
+
+SEVERITY vs ACTION CLASS CROSS-TABULATION:
+Action_Class      Challenge  Dive  Dont know  ...  Pushing  Standing tackling  Tackling   All
+Severity                                      ...                                            
+1              1        251     0         34  ...       70                707       106  1402
+2              0         19     1          2  ...        3                196        69   403
+3              1         14     0          0  ...        1                275       182   687
+4              0          2     0          0  ...        0                 10        17    44
+5              0          0     0          0  ...        0                  4        16    27
+               9         97    27         16  ...       14                 72        58   353
+All           11        383    28         52  ...       88               1264       448  2916
+
+[7 rows x 11 columns]

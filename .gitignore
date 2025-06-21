@@ -11,3 +11,13 @@ __pycache__/
 *.pyzwzw
 
 tests/
+
+*.pt
+*.pth
+*.pkl
+*.ptl
+*.pthl
+*.pkl
+*.ptl
+*.pthl
+*.pkl
