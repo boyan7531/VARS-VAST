@@ -6,3 +6,10 @@ tqdm>=4.64.0
 Pillow>=8.3.0
 timm>=0.9.0
 transformers>=4.20.0
+
+# Optional fast video loading dependencies
+# Install with: pip install decord
+# decord>=0.6.0
+
+# Alternative: Install with: pip install av
+# av>=9.0.0
