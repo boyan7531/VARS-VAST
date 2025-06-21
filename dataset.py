@@ -17,14 +17,17 @@ try:
     DECORD_AVAILABLE = True
 except ImportError:
     DECORD_AVAILABLE = False
-    logging.warning("decord not available, falling back to OpenCV for video loading")
 
 try:
     import av
     PYAV_AVAILABLE = True
 except ImportError:
     PYAV_AVAILABLE = False
-    logging.warning("PyAV not available, falling back to OpenCV for video loading")
+
+# Only warn if neither fast decoder is available
+if not DECORD_AVAILABLE and not PYAV_AVAILABLE:
+    logging.warning("Neither decord nor PyAV available. Using OpenCV for video loading. "
+                   "For 3-10x faster video loading, install: pip install decord  OR  pip install av")
 
 # Import transforms (make sure this module is in the same directory)
 try:
@@ -432,9 +435,12 @@ class MVFoulsDataset(Dataset):
                     resized_frames.append(resized_frame)
                 frames = np.stack(resized_frames, axis=0)
             
-            # Pad if needed
-            while len(frames) < self.num_frames:
-                frames = np.concatenate([frames, frames[-1:]], axis=0)
+            # Pad if needed (more efficient than loop)
+            if len(frames) < self.num_frames:
+                pad_count = self.num_frames - len(frames)
+                last_frame = frames[-1:] if len(frames) > 0 else np.zeros((1, *frames.shape[1:]), dtype=frames.dtype)
+                padding = np.repeat(last_frame, pad_count, axis=0)
+                frames = np.concatenate([frames, padding], axis=0)
             
             return frames[:self.num_frames]
             
@@ -485,9 +491,11 @@ class MVFoulsDataset(Dataset):
             black_frame = np.zeros((h, w, 3), dtype=np.uint8)
             frames = [black_frame] * self.num_frames
         
-        # Pad if needed
-        while len(frames) < self.num_frames:
-            frames.append(frames[-1].copy())
+        # Pad if needed (more efficient than loop)
+        if len(frames) < self.num_frames:
+            pad_count = self.num_frames - len(frames)
+            last_frame = frames[-1] if frames else np.zeros((224, 224, 3), dtype=np.uint8)
+            frames.extend([last_frame.copy() for _ in range(pad_count)])
         
         return np.stack(frames[:self.num_frames], axis=0)
     
@@ -551,8 +559,10 @@ class MVFoulsDataset(Dataset):
             return np.stack(frames, axis=0)
 
         # Pad very short clips by repeating the last frame
-        while len(frames) < self.num_frames:
-            frames.append(frames[-1].copy())
+        if len(frames) < self.num_frames:
+            pad_count = self.num_frames - len(frames)
+            last_frame = frames[-1] if frames else np.zeros((224, 224, 3), dtype=np.uint8)
+            frames.extend([last_frame.copy() for _ in range(pad_count)])
 
         if len(frames) != self.num_frames:
             logging.warning(f"Expected {self.num_frames} frames but got {len(frames)} from {video_path}")
@@ -651,20 +661,30 @@ class MVFoulsDataset(Dataset):
         
         # Prepare the sample for transforms (if any)
         sample = {
-            'video': video,  # Shape: (T, H, W, C)
+            'video': video,  # Shape: (T, H, W, C), dtype: uint8 by default
             'targets': targets  # Shape: (N_TASKS,)
         }
         
         # Apply transforms if specified
+        # Note: Transforms should handle (T, H, W, C) uint8 format
+        # Most video transforms expect this format and will convert to float/normalize
         if self.transform:
             sample = self.transform(sample)
         
         # Return as tuple
         return sample['video'], sample['targets']
     
-    def get_action_ids(self) -> List[int]:
+    def get_action_ids(self) -> List[Union[int, str]]:
         """Get list of all unique action IDs in the dataset."""
-        return sorted(list(set(int(item.action_id) for item in self.dataset_index)))
+        action_ids = set()
+        for item in self.dataset_index:
+            try:
+                # Try to convert to int for numeric IDs (official MVFouls)
+                action_ids.add(int(item.action_id))
+            except (ValueError, TypeError):
+                # Keep as string for non-numeric IDs (unit tests, custom datasets)
+                action_ids.add(item.action_id)
+        return sorted(list(action_ids))
     
     def get_task_statistics(self) -> Dict[str, Dict]:
         """Get statistics for all tasks in the dataset (per unique action, not per clip)."""
@@ -716,8 +736,14 @@ class MVFoulsDataset(Dataset):
     
     def get_split_info(self) -> Dict:
         """Get information about the dataset split."""
-        # Count unique actions
-        unique_actions = len(set(int(item.action_id) for item in self.dataset_index))
+        # Count unique actions (handle both numeric and string IDs)
+        unique_action_ids = set()
+        for item in self.dataset_index:
+            try:
+                unique_action_ids.add(int(item.action_id))
+            except (ValueError, TypeError):
+                unique_action_ids.add(item.action_id)
+        unique_actions = len(unique_action_ids)
         
         info = {
             'split': self.split,
