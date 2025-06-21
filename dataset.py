@@ -510,11 +510,18 @@ class MVFoulsDataset(Dataset):
         return sorted(list(set(int(item['action_id']) for item in self.dataset_index)))
     
     def get_task_statistics(self) -> Dict[str, Dict]:
-        """Get statistics for all tasks in the dataset."""
+        """Get statistics for all tasks in the dataset (per unique action, not per clip)."""
         if not self.load_annotations:
             return {}
         
         stats = {}
+        
+        # Get unique actions to avoid counting the same action multiple times
+        unique_actions = {}
+        for item in self.dataset_index:
+            action_id = item['action_id']
+            if action_id not in unique_actions and item['numeric_labels'] is not None:
+                unique_actions[action_id] = item['numeric_labels']
         
         for task_idx, task_name in enumerate(TASKS_INFO.keys()):
             task_stats = {
@@ -524,12 +531,11 @@ class MVFoulsDataset(Dataset):
                 'class_counts': [0] * len(TASKS_INFO[task_name])
             }
             
-            # Count occurrences of each class
-            for item in self.dataset_index:
-                if item['numeric_labels'] is not None:
-                    class_idx = item['numeric_labels'][task_idx].item()
-                    if 0 <= class_idx < len(task_stats['class_counts']):
-                        task_stats['class_counts'][class_idx] += 1
+            # Count occurrences of each class (per unique action)
+            for action_id, numeric_labels in unique_actions.items():
+                class_idx = numeric_labels[task_idx].item()
+                if 0 <= class_idx < len(task_stats['class_counts']):
+                    task_stats['class_counts'][class_idx] += 1
             
             # Calculate class weights (inverse frequency)
             total_samples = sum(task_stats['class_counts'])
