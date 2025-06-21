@@ -8,7 +8,6 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional, Union
 import glob
 from collections import OrderedDict
-import re
 
 # Import transforms (make sure this module is in the same directory)
 try:
@@ -89,45 +88,7 @@ def normalize_label_value(raw_value: any, task_name: str) -> str:
     print(f"Warning: Unknown value '{str_value}' for task '{task_name}', using Missing/Empty")
     return "Missing" if task_name == "severity" else "Missing/Empty"
 
-def parse_replay_speed(clips_info: List[Dict], url_local: str = "") -> float:
-    """
-    Parse replay speed from clips info or URL.
-    
-    Args:
-        clips_info: List of clip information dictionaries
-        url_local: Local URL that might contain speed information
-    
-    Returns:
-        float: Replay speed (1.0 = normal speed, 0.5 = half speed, 2.0 = double speed)
-    """
-    # Try to extract from clips_info first
-    if clips_info:
-        for clip_info in clips_info:
-            if isinstance(clip_info, dict) and 'speed' in clip_info:
-                try:
-                    return float(clip_info['speed'])
-                except (ValueError, TypeError):
-                    pass
-    
-    # Try to extract from url_local using regex
-    if url_local:
-        # Look for patterns like "0.5x", "2x", "speed_0.25", etc.
-        speed_patterns = [
-            r'(\d+\.?\d*)x',  # Matches "0.5x", "2x", etc.
-            r'speed[_-](\d+\.?\d*)',  # Matches "speed_0.5", "speed-2", etc.
-            r'(\d+\.?\d*)[_-]?speed',  # Matches "0.5_speed", "2speed", etc.
-        ]
-        
-        for pattern in speed_patterns:
-            match = re.search(pattern, url_local.lower())
-            if match:
-                try:
-                    return float(match.group(1))
-                except (ValueError, TypeError):
-                    pass
-    
-    # Default to normal speed if not found
-    return 1.0
+
 
 def get_task_info_for_model() -> Dict[str, Dict[str, any]]:
     """
@@ -305,8 +266,7 @@ class MVFoulsDataset(Dataset):
                     'clip_path': clip_path,
                     'clip_name': clip_path.name,
                     'annotations': self.annotations.get(action_id, {}) if self.load_annotations else {},
-                    'numeric_labels': None,  # Will be populated by _process_annotations
-                    'replay_speed': 1.0  # Will be populated by _process_annotations
+                    'numeric_labels': None  # Will be populated by _process_annotations
                 }
                 dataset_index.append(clip_info)
         
@@ -348,11 +308,6 @@ class MVFoulsDataset(Dataset):
             
             # Store as tensor
             clip_info['numeric_labels'] = torch.tensor(numeric_labels, dtype=torch.long)
-            
-            # Parse replay speed
-            clips_info = annotations.get('Clips', [])
-            url_local = annotations.get('UrlLocal', '')
-            clip_info['replay_speed'] = parse_replay_speed(clips_info, url_local)
     
     def _safe_float_conversion(self, value) -> float:
         """Safely convert a value to float, handling empty strings and invalid values."""
