@@ -53,8 +53,17 @@ class VideoResize:
         video = sample['video']  # Shape: (T, H, W, C)
         h_target, w_target = self.size
         
+        # Ensure video is numpy array for cv2.resize
+        if isinstance(video, torch.Tensor):
+            video = video.numpy()
+        
         resized_frames = []
         for frame in video:
+            # Ensure frame is contiguous numpy array for cv2.resize
+            if not isinstance(frame, np.ndarray):
+                frame = np.asarray(frame)
+            frame = np.ascontiguousarray(frame, dtype=np.uint8)
+            
             # cv2.resize expects (width, height) but we store (height, width)
             resized_frame = cv2.resize(frame, (w_target, h_target), 
                                      interpolation=self.interpolation)
@@ -79,6 +88,11 @@ class VideoRandomCrop:
     
     def __call__(self, sample: Dict) -> Dict:
         video = sample['video']  # Shape: (T, H, W, C)
+        
+        # Ensure video is numpy array
+        if isinstance(video, torch.Tensor):
+            video = video.numpy()
+        
         t, h, w, c = video.shape
         h_crop, w_crop = self.size
         
@@ -110,6 +124,11 @@ class VideoCenterCrop:
     
     def __call__(self, sample: Dict) -> Dict:
         video = sample['video']  # Shape: (T, H, W, C)
+        
+        # Ensure video is numpy array
+        if isinstance(video, torch.Tensor):
+            video = video.numpy()
+        
         t, h, w, c = video.shape
         h_crop, w_crop = self.size
         
@@ -139,6 +158,11 @@ class VideoRandomHorizontalFlip:
     def __call__(self, sample: Dict) -> Dict:
         if random.random() < self.p:
             video = sample['video']  # Shape: (T, H, W, C)
+            
+            # Ensure video is numpy array
+            if isinstance(video, torch.Tensor):
+                video = video.numpy()
+            
             # Flip all frames horizontally (flip along width axis)
             flipped_video = np.flip(video, axis=2).copy()
             sample['video'] = flipped_video
@@ -150,6 +174,11 @@ class VideoToTensor:
     
     def __call__(self, sample: Dict) -> Dict:
         video = sample['video']  # Shape: (T, H, W, C), dtype=uint8, range=0-255
+        
+        # Handle both numpy arrays and tensors
+        if isinstance(video, torch.Tensor):
+            # Convert tensor to numpy for consistent processing
+            video = video.numpy()
         
         # Convert to float and normalize to [0, 1]
         video = video.astype(np.float32) / 255.0
