@@ -139,7 +139,6 @@ def create_balanced_model(
         model = build_multi_task_model(
             backbone_pretrained=True,
             backbone_freeze_mode='gradual',
-            head_loss_type='focal',  # Default
             loss_types_per_task=loss_types_per_task,
             class_weights=task_weights,
             **model_kwargs
@@ -155,13 +154,17 @@ def create_balanced_model(
         else:
             loss_type = 'focal'
         
+        # Filter out conflicting kwargs
+        filtered_kwargs = {k: v for k, v in model_kwargs.items() 
+                          if k not in ['head_loss_type', 'head_label_smoothing']}
+        
         model = build_single_task_model(
             num_classes=2,
             backbone_pretrained=True,
             backbone_freeze_mode='gradual',
             head_loss_type=loss_type,
             class_weights=class_weights,
-            **model_kwargs
+            **filtered_kwargs
         )
     
     return model
@@ -257,9 +260,7 @@ def main():
         logger.info("🏗️ Creating balanced model...")
         model = create_balanced_model(
             multi_task=args.multi_task,
-            imbalance_analysis=imbalance_analysis,
-            head_loss_type='focal',
-            head_label_smoothing=0.1 if args.multi_task else 0.0
+            imbalance_analysis=imbalance_analysis
         )
         
         # Create dataloaders
