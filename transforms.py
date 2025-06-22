@@ -297,6 +297,30 @@ def get_minimal_transforms(size: int = 224) -> VideoCompose:
 
 
 # Additional function for different augmentation strategies
+def get_video_transforms(image_size: int = 224, augment_train: bool = True) -> Dict[str, VideoCompose]:
+    """
+    Get video transforms for training and validation.
+    
+    Args:
+        image_size: Target image size
+        augment_train: Whether to apply augmentation for training
+        
+    Returns:
+        Dict with 'train' and 'val' transforms
+    """
+    if augment_train:
+        train_transforms = get_strong_train_transforms(image_size)
+    else:
+        train_transforms = get_minimal_transforms(image_size)
+    
+    val_transforms = get_val_transforms(image_size)
+    
+    return {
+        'train': train_transforms,
+        'val': val_transforms
+    }
+
+
 def get_strong_train_transforms(size: int = 224) -> VideoCompose:
     """
     Get stronger training transforms with more augmentation.

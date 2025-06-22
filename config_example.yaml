@@ -1,0 +1,46 @@
+# MVFouls Training Configuration Example
+# =====================================
+
+# Data Configuration
+train_dir: "./mvfouls/train"  # Path to training videos
+val_dir: "./mvfouls/val"      # Path to validation videos
+test_dir: "./mvfouls/test"    # Path to test videos (optional)
+challenge_dir: "./mvfouls/challenge"  # Path to challenge videos (optional)
+train_annotations: "./mvfouls/train_annotations.csv"  # Training annotations
+val_annotations: "./mvfouls/val_annotations.csv"      # Validation annotations
+test_annotations: "./mvfouls/test_annotations.csv"    # Test annotations (optional)
+challenge_annotations: "./mvfouls/challenge_annotations.csv"  # Challenge annotations (optional)
+
+# Model Configuration
+multi_task: true  # Set to false for single-task learning
+num_classes: 2    # Only used for single-task mode
+pretrained: true  # Use pretrained Video Swin backbone
+freeze_backbone: false  # Whether to freeze backbone during training
+
+# Training Configuration
+epochs: 50
+batch_size: 8     # Adjust based on your GPU memory
+lr: 0.0001        # Learning rate
+weight_decay: 0.0001
+optimizer: "adamw"  # Options: adamw, adam, sgd
+scheduler: "cosine"  # Options: cosine, step, plateau, warmup_cosine
+warmup_steps: 1000  # For warmup_cosine scheduler
+
+# Data Processing
+max_frames: 32    # Maximum frames per video
+fps: 8           # Target FPS for video processing
+image_size: 224  # Input image size
+
+
+# Training Settings
+num_workers: 4   # Data loading workers (adjust based on CPU cores)
+gradient_accumulation_steps: 1  # For effective larger batch sizes
+max_grad_norm: 1.0  # Gradient clipping
+log_interval: 50    # Steps between logging
+eval_interval: 1    # Epochs between evaluation
+save_every: 10      # Epochs between saving checkpoints
+
+# Other Settings
+output_dir: "./outputs"  # Directory for logs and checkpoints
+seed: 42
+device: "auto"  # Options: auto, cpu, cuda 

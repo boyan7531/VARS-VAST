@@ -35,7 +35,7 @@ import numpy as np
 try:
     from model.mvfouls_model import MVFoulsModel, build_multi_task_model, build_single_task_model
     from training_utils import MultiTaskTrainer, create_mvfouls_trainer, create_task_schedulers
-    from dataset import MVFoulsDataset, create_train_val_split
+    from dataset import MVFoulsDataset
     from transforms import get_video_transforms
     from utils import get_task_metadata, format_metrics_table
 except ImportError as e:
@@ -83,26 +83,41 @@ def create_dataloaders(args, transforms):
     """Create training and validation dataloaders from separate directories."""
     logger = logging.getLogger(__name__)
     
+    # Determine root directory
+    if args.root_dir:
+        # Option 1: Single root directory provided
+        root_dir = args.root_dir
+        logger.info(f"Using root directory: {root_dir}")
+    elif args.train_dir and args.val_dir:
+        # Option 2: Separate directories provided
+        import os
+        if args.train_dir.endswith('train_720p'):
+            root_dir = os.path.dirname(args.train_dir)
+            logger.info(f"Extracted root directory from train_dir: {root_dir}")
+        else:
+            root_dir = args.train_dir
+            logger.info(f"Using train_dir as root directory: {root_dir}")
+    else:
+        raise ValueError("Either --root-dir or both --train-dir and --val-dir must be provided")
+    
     # Create training dataset
     logger.info("Creating training dataset...")
     train_dataset = MVFoulsDataset(
-        video_dir=args.train_dir,
-        annotations_file=args.train_annotations,
-        transforms=transforms['train'],
-        multi_task=args.multi_task,
-        max_frames=args.max_frames,
-        fps=args.fps
+        root_dir=root_dir,
+        split='train',
+        transform=transforms['train'],
+        load_annotations=True,
+        num_frames=args.max_frames
     )
     
     # Create validation dataset
     logger.info("Creating validation dataset...")
     val_dataset = MVFoulsDataset(
-        video_dir=args.val_dir,
-        annotations_file=args.val_annotations,
-        transforms=transforms['val'],
-        multi_task=args.multi_task,
-        max_frames=args.max_frames,
-        fps=args.fps
+        root_dir=root_dir,
+        split='valid',
+        transform=transforms['val'],
+        load_annotations=True,
+        num_frames=args.max_frames
     )
     
     logger.info(f"Datasets created: {len(train_dataset)} train, {len(val_dataset)} val samples")
@@ -147,12 +162,11 @@ def create_test_dataloader(args, transforms, split='test'):
     
     logger.info(f"Creating {split} dataset...")
     test_dataset = MVFoulsDataset(
-        video_dir=video_dir,
-        annotations_file=annotations_file,
-        transforms=transforms['val'],  # Use validation transforms (no augmentation)
-        multi_task=args.multi_task,
-        max_frames=args.max_frames,
-        fps=args.fps
+        root_dir=video_dir,
+        split=split,
+        transform=transforms['val'],  # Use validation transforms (no augmentation)
+        load_annotations=(split != 'challenge'),  # Challenge split typically has no annotations
+        num_frames=args.max_frames
     )
     
     logger.info(f"{split.capitalize()} dataset created: {len(test_dataset)} samples")
@@ -262,11 +276,15 @@ def main():
     """Main training function."""
     parser = argparse.ArgumentParser(description='Train MVFouls Model')
     
-    # Data arguments
-    parser.add_argument('--train-dir', type=str, required=True,
-                        help='Path to training video directory')
-    parser.add_argument('--val-dir', type=str, required=True,
-                        help='Path to validation video directory')
+    # Data arguments - Option 1: Separate directories
+    parser.add_argument('--train-dir', type=str,
+                        help='Path to training video directory (or MVFouls root directory)')
+    parser.add_argument('--val-dir', type=str,
+                        help='Path to validation video directory (or same as train-dir if using root)')
+    
+    # Data arguments - Option 2: Single root directory  
+    parser.add_argument('--root-dir', type=str,
+                        help='Path to MVFouls root directory (containing train_720p, valid_720p, etc.)')
     parser.add_argument('--test-dir', type=str, default=None,
                         help='Path to test video directory (optional)')
     parser.add_argument('--challenge-dir', type=str, default=None,
@@ -313,7 +331,7 @@ def main():
     # Data processing arguments
     parser.add_argument('--max-frames', type=int, default=32,
                         help='Maximum number of frames per video')
-    parser.add_argument('--fps', type=int, default=8,
+    parser.add_argument('--fps', type=int, default=25,
                         help='Target FPS for video processing')
     parser.add_argument('--image-size', type=int, default=224,
                         help='Input image size')
@@ -342,6 +360,8 @@ def main():
                         help='Random seed')
     parser.add_argument('--device', type=str, default='auto',
                         help='Device to use (auto, cpu, cuda)')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='Test pipeline without training (validates data loading, model creation, etc.)')
     
     args = parser.parse_args()
     
@@ -449,7 +469,77 @@ def main():
             start_epoch = checkpoint.get('epoch', 0)
             best_metric = checkpoint.get('best_metric', float('-inf'))
         
-        # Training loop
+        if args.dry_run:
+            # Dry run mode: test everything without training
+            logger.info("🧪 DRY RUN MODE: Testing pipeline without training...")
+            
+            # Test one training step
+            logger.info("Testing training step...")
+            for batch_idx, batch in enumerate(train_loader):
+                if batch_idx >= 1:  # Only test one batch
+                    break
+                videos, targets = batch
+                logger.info(f"✓ Batch shape: videos={videos.shape}, targets type={type(targets)}")
+                
+                # Test forward pass
+                if model.multi_task:
+                    logits_dict, extras = model(videos, return_dict=True)
+                    logger.info(f"✓ Forward pass: {len(logits_dict)} tasks")
+                    for task, logits in logits_dict.items():
+                        logger.info(f"  - {task}: {logits.shape}")
+                else:
+                    logits, extras = model(videos, return_dict=False)
+                    logger.info(f"✓ Forward pass: logits={logits.shape}")
+                
+                # Test loss computation
+                if model.multi_task:
+                    loss_dict = trainer.model.compute_loss(logits_dict, targets, return_dict=True)
+                    logger.info(f"✓ Loss computation: total_loss={loss_dict['total_loss'].item():.4f}")
+                else:
+                    loss_dict = trainer.model.compute_loss(logits, targets, return_dict=True)
+                    logger.info(f"✓ Loss computation: total_loss={loss_dict['total_loss'].item():.4f}")
+                
+                break
+            
+            # Test validation step
+            logger.info("Testing validation step...")
+            for batch_idx, batch in enumerate(val_loader):
+                if batch_idx >= 1:  # Only test one batch
+                    break
+                videos, targets = batch
+                
+                with torch.no_grad():
+                    if model.multi_task:
+                        logits_dict, extras = model(videos, return_dict=True)
+                        logger.info(f"✓ Validation forward pass: {len(logits_dict)} tasks")
+                    else:
+                        logits, extras = model(videos, return_dict=False)
+                        logger.info(f"✓ Validation forward pass: logits={logits.shape}")
+                break
+            
+            # Test checkpoint saving
+            logger.info("Testing checkpoint saving...")
+            test_checkpoint_path = output_dir / 'dry_run_test.pth'
+            trainer.save_checkpoint(
+                str(test_checkpoint_path),
+                metadata={'dry_run': True, 'args': vars(args)}
+            )
+            logger.info(f"✓ Checkpoint saved: {test_checkpoint_path}")
+            
+            # Test ONNX export if requested
+            logger.info("Testing model export...")
+            try:
+                test_onnx_path = output_dir / 'dry_run_test.onnx'
+                model.export_onnx(str(test_onnx_path))
+                logger.info(f"✓ ONNX export successful: {test_onnx_path}")
+            except Exception as e:
+                logger.warning(f"⚠️ ONNX export failed (this is often OK): {e}")
+            
+            logger.info("🎉 DRY RUN COMPLETED SUCCESSFULLY!")
+            logger.info("✅ Pipeline is ready for training!")
+            return
+        
+        # Normal training mode
         logger.info("Starting training...")
         logger.info(f"Training for {args.epochs} epochs, starting from epoch {start_epoch}")
         

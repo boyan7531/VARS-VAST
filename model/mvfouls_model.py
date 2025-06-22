@@ -879,8 +879,8 @@ def build_mvfouls_model(**kwargs) -> MVFoulsModel:
 
 def build_single_task_model(
     num_classes: int = 2,
-    pretrained: bool = True,
-    freeze_backbone: bool = False,
+    backbone_pretrained: bool = True,
+    backbone_freeze_mode: str = 'none',
     **kwargs
 ) -> MVFoulsModel:
     """
@@ -888,18 +888,16 @@ def build_single_task_model(
     
     Args:
         num_classes: Number of classes
-        pretrained: Use pretrained backbone
-        freeze_backbone: Freeze backbone during training
+        backbone_pretrained: Use pretrained backbone
+        backbone_freeze_mode: Backbone freeze mode ('none', 'freeze_all', etc.)
         **kwargs: Additional arguments
         
     Returns:
         Single-task MVFoulsModel
     """
-    freeze_mode = 'freeze_all' if freeze_backbone else 'none'
-    
     return MVFoulsModel(
-        backbone_pretrained=pretrained,
-        backbone_freeze_mode=freeze_mode,
+        backbone_pretrained=backbone_pretrained,
+        backbone_freeze_mode=backbone_freeze_mode,
         num_classes=num_classes,
         multi_task=False,
         **kwargs
@@ -907,16 +905,16 @@ def build_single_task_model(
 
 
 def build_multi_task_model(
-    pretrained: bool = True,
-    freeze_backbone: bool = False,
+    backbone_pretrained: bool = True,
+    backbone_freeze_mode: str = 'none',
     **kwargs
 ) -> MVFoulsModel:
     """
     Build multi-task MVFouls model with automatic task detection.
     
     Args:
-        pretrained: Use pretrained backbone
-        freeze_backbone: Freeze backbone during training
+        backbone_pretrained: Use pretrained backbone
+        backbone_freeze_mode: Backbone freeze mode ('none', 'freeze_all', etc.)
         **kwargs: Additional arguments
         
     Returns:
@@ -925,11 +923,9 @@ def build_multi_task_model(
     if get_task_metadata is None:
         raise ImportError("Multi-task model requires task metadata from utils.py")
     
-    freeze_mode = 'freeze_all' if freeze_backbone else 'none'
-    
     return MVFoulsModel(
-        backbone_pretrained=pretrained,
-        backbone_freeze_mode=freeze_mode,
+        backbone_pretrained=backbone_pretrained,
+        backbone_freeze_mode=backbone_freeze_mode,
         multi_task=True,
         **kwargs
     )
