@@ -7,6 +7,7 @@ This script addresses the severe class imbalance in MVFouls dataset by:
 2. Using focal loss with effective number weighting
 3. Implementing task-specific loss strategies
 4. Monitoring per-class metrics during training
+5. Automatic gradual backbone unfreezing
 """
 
 import argparse
@@ -47,6 +48,83 @@ def setup_logging(level: str = 'INFO'):
         ]
     )
     return logging.getLogger(__name__)
+
+
+def get_unfreeze_schedule(total_epochs: int, freeze_mode: str) -> Dict[int, str]:
+    """
+    Create a schedule for gradual backbone unfreezing.
+    
+    Args:
+        total_epochs: Total number of training epochs
+        freeze_mode: Backbone freeze mode
+        
+    Returns:
+        Dictionary mapping epoch numbers to unfreeze actions
+    """
+    schedule = {}
+    
+    if freeze_mode == 'gradual':
+        # Gradual unfreezing schedule based on total epochs
+        if total_epochs >= 20:
+            # For 20+ epochs: unfreeze every 3-4 epochs
+            schedule[3] = "patch_embed"      # Epoch 4: unfreeze patch embedding
+            schedule[6] = "stage_0"          # Epoch 7: unfreeze first stage
+            schedule[9] = "stage_1"          # Epoch 10: unfreeze second stage
+            schedule[12] = "stage_2"         # Epoch 13: unfreeze third stage
+            schedule[15] = "stage_3"         # Epoch 16: unfreeze fourth stage
+        elif total_epochs >= 15:
+            # For 15+ epochs: unfreeze every 3 epochs
+            schedule[2] = "patch_embed"      # Epoch 3: unfreeze patch embedding
+            schedule[5] = "stage_0"          # Epoch 6: unfreeze first stage
+            schedule[8] = "stage_1"          # Epoch 9: unfreeze second stage
+            schedule[11] = "stage_2"         # Epoch 12: unfreeze third stage
+            schedule[14] = "stage_3"         # Epoch 15: unfreeze fourth stage
+        elif total_epochs >= 10:
+            # For 10+ epochs: unfreeze every 2 epochs
+            schedule[1] = "patch_embed"      # Epoch 2: unfreeze patch embedding
+            schedule[3] = "stage_0"          # Epoch 4: unfreeze first stage
+            schedule[5] = "stage_1"          # Epoch 6: unfreeze second stage
+            schedule[7] = "stage_2"          # Epoch 8: unfreeze third stage
+            schedule[9] = "stage_3"          # Epoch 10: unfreeze fourth stage
+        else:
+            # For short training: unfreeze every epoch after first
+            for i in range(min(5, total_epochs - 1)):
+                schedule[i + 1] = ["patch_embed", "stage_0", "stage_1", "stage_2", "stage_3"][i]
+    
+    return schedule
+
+
+def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule: Dict[int, str], logger):
+    """
+    Apply gradual unfreezing based on the schedule.
+    
+    Args:
+        model: The MVFouls model
+        epoch: Current epoch (0-indexed)
+        unfreeze_schedule: Schedule mapping epochs to unfreeze actions
+        logger: Logger instance
+    """
+    if epoch in unfreeze_schedule and model.backbone.freeze_mode == 'gradual':
+        group_name = unfreeze_schedule[epoch]
+        
+        # Get current stage before unfreezing
+        current_stage = model.backbone.get_current_unfreeze_stage()
+        
+        # Unfreeze next group
+        model.unfreeze_backbone_gradually()
+        
+        # Get new stage after unfreezing
+        new_stage = model.backbone.get_current_unfreeze_stage()
+        
+        # Count trainable parameters
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_pct = (trainable_params / total_params) * 100
+        
+        logger.info(f"🔓 Epoch {epoch + 1}: Unfroze backbone group '{group_name}' "
+                   f"(stage {current_stage} → {new_stage})")
+        logger.info(f"   Trainable parameters: {trainable_params:,} / {total_params:,} "
+                   f"({trainable_pct:.1f}%)")
 
 
 def analyze_dataset_imbalance(dataset: MVFoulsDataset) -> Dict[str, Dict]:
@@ -242,6 +320,12 @@ def main():
                        help='Force specific weighting method')
     parser.add_argument('--focal-gamma', type=float, default=2.0, help='Focal loss gamma parameter')
     
+    # Unfreezing arguments
+    parser.add_argument('--disable-gradual-unfreezing', action='store_true', 
+                       help='Disable automatic gradual unfreezing')
+    parser.add_argument('--unfreeze-schedule', type=str, 
+                       help='Custom unfreeze schedule as JSON (e.g., {"3": "patch_embed", "6": "stage_0"})')
+    
     # Other arguments
     parser.add_argument('--output-dir', type=str, default='./outputs_balanced', help='Output directory')
     parser.add_argument('--device', type=str, default='auto', help='Device to use')
@@ -308,6 +392,23 @@ def main():
             imbalance_analysis=imbalance_analysis
         )
         
+        # Create unfreezing schedule
+        if args.freeze_mode == 'gradual' and not args.disable_gradual_unfreezing:
+            if args.unfreeze_schedule:
+                # Parse custom schedule
+                unfreeze_schedule = {int(k): v for k, v in json.loads(args.unfreeze_schedule).items()}
+                logger.info(f"📅 Using custom unfreeze schedule: {unfreeze_schedule}")
+            else:
+                # Generate automatic schedule
+                unfreeze_schedule = get_unfreeze_schedule(args.epochs, args.freeze_mode)
+                logger.info(f"📅 Generated unfreeze schedule for {args.epochs} epochs:")
+                for epoch, group in unfreeze_schedule.items():
+                    logger.info(f"   Epoch {epoch + 1}: unfreeze {group}")
+        else:
+            unfreeze_schedule = {}
+            if args.freeze_mode == 'gradual':
+                logger.info("⚠️ Gradual unfreezing disabled by --disable-gradual-unfreezing")
+        
         # Create dataloaders
         train_loader = DataLoader(
             train_dataset,
@@ -368,7 +469,8 @@ def main():
         config = {
             'args': vars(args),
             'imbalance_analysis': imbalance_analysis,
-            'model_config': model.config
+            'model_config': model.config,
+            'unfreeze_schedule': unfreeze_schedule
         }
         
         with open(output_dir / 'config.json', 'w') as f:
@@ -384,6 +486,9 @@ def main():
         
         for epoch in range(args.epochs):
             logger.info(f"\n📅 Epoch {epoch + 1}/{args.epochs}")
+            
+            # Apply gradual unfreezing if scheduled
+            apply_gradual_unfreezing(model, epoch, unfreeze_schedule, logger)
             
             # Training
             model.train()
@@ -414,6 +519,15 @@ def main():
                 logger.info("📋 Validation Metrics:")
                 print(val_results['metrics_table'])
             
+            # Log current backbone status
+            if args.freeze_mode == 'gradual':
+                current_stage = model.backbone.get_current_unfreeze_stage()
+                trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                total_params = sum(p.numel() for p in model.parameters())
+                trainable_pct = (trainable_params / total_params) * 100
+                logger.info(f"🔧 Backbone status: stage {current_stage}, "
+                           f"{trainable_params:,} trainable ({trainable_pct:.1f}%)")
+            
             # Save best model
             current_metric = val_results.get('overall_accuracy', 1.0 - val_loss)
             if current_metric > best_metric:
@@ -425,7 +539,8 @@ def main():
                     'optimizer_state_dict': optimizer.state_dict(),
                     'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
                     'best_metric': best_metric,
-                    'config': config
+                    'config': config,
+                    'backbone_stage': model.backbone.get_current_unfreeze_stage()
                 }
                 
                 torch.save(checkpoint, output_dir / 'best_model.pth')
@@ -439,9 +554,25 @@ def main():
             writer.add_scalar('Loss/Train', avg_train_loss, epoch)
             writer.add_scalar('Loss/Val', val_loss, epoch)
             writer.add_scalar('Metric/Best', best_metric, epoch)
+            
+            # Log backbone unfreezing progress
+            if args.freeze_mode == 'gradual':
+                current_stage = model.backbone.get_current_unfreeze_stage()
+                trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                writer.add_scalar('Backbone/Stage', current_stage, epoch)
+                writer.add_scalar('Backbone/TrainableParams', trainable_params, epoch)
         
         writer.close()
         logger.info("🎉 Training completed successfully!")
+        
+        # Final backbone status
+        if args.freeze_mode == 'gradual':
+            final_stage = model.backbone.get_current_unfreeze_stage()
+            final_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            final_total = sum(p.numel() for p in model.parameters())
+            logger.info(f"🏁 Final backbone status: stage {final_stage}, "
+                       f"{final_trainable:,}/{final_total:,} trainable "
+                       f"({final_trainable/final_total*100:.1f}%)")
         
     except Exception as e:
         logger.error(f"💥 Training failed: {e}")
