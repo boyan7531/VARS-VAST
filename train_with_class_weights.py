@@ -543,8 +543,18 @@ def main():
                     'backbone_stage': model.backbone.get_current_unfreeze_stage()
                 }
                 
-                torch.save(checkpoint, output_dir / 'best_model.pth')
+                # Save with unique filename including epoch and metric
+                model_filename = f'best_model_epoch_{epoch+1:02d}_metric_{best_metric:.4f}.pth'
+                model_path = output_dir / model_filename
+                torch.save(checkpoint, model_path)
+                
+                # Also save as latest best model (for easy loading)
+                latest_path = output_dir / 'best_model_latest.pth'
+                torch.save(checkpoint, latest_path)
+                
                 logger.info(f"💾 New best model saved! Metric: {best_metric:.4f}")
+                logger.info(f"   Saved as: {model_filename}")
+                logger.info(f"   Also saved as: best_model_latest.pth")
             
             # Step scheduler
             if scheduler:
