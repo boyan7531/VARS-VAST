@@ -96,9 +96,9 @@ def get_unfreeze_schedule(total_epochs: int, freeze_mode: str) -> Dict[int, str]
     return schedule
 
 
-def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule: Dict[int, str], logger, trainer=None, args=None):
+def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule: Dict[int, str], logger, trainer=None, args=None, optimizer=None):
     """
-    Apply gradual unfreezing based on the schedule.
+    Apply gradual unfreezing based on the schedule with optional adaptive learning rate scaling.
     
     Args:
         model: The MVFouls model
@@ -106,7 +106,8 @@ def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule:
         unfreeze_schedule: Schedule mapping epochs to unfreeze actions
         logger: Logger instance
         trainer: Optional trainer instance for batch size reduction
-        args: Optional args for batch size configuration
+        args: Optional args for batch size and learning rate configuration
+        optimizer: Optional optimizer for learning rate scaling
     """
     if epoch in unfreeze_schedule and model.backbone.freeze_mode == 'gradual':
         group_name = unfreeze_schedule[epoch]
@@ -161,6 +162,78 @@ def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule:
                    f"(stage {current_stage} → {new_stage})")
         logger.info(f"   Trainable parameters: {trainable_params:,} / {total_params:,} "
                    f"({trainable_pct:.1f}%)")
+        
+        # Apply adaptive learning rate scaling if enabled
+        if args and args.adaptive_lr and optimizer is not None:
+            apply_adaptive_lr_scaling(
+                optimizer=optimizer,
+                group_name=group_name,
+                trainable_params=trainable_params,
+                current_stage=current_stage,
+                new_stage=new_stage,
+                args=args,
+                logger=logger
+            )
+
+
+def apply_adaptive_lr_scaling(optimizer, group_name: str, trainable_params: int, current_stage: int, new_stage: int, args, logger):
+    """
+    Apply adaptive learning rate scaling based on the unfreezing stage and parameter count.
+    
+    Args:
+        optimizer: The optimizer to scale learning rate for
+        group_name: Name of the unfrozen group (e.g., 'patch_embed', 'stage_0', etc.)
+        trainable_params: Number of trainable parameters after unfreezing
+        current_stage: Stage before unfreezing
+        new_stage: Stage after unfreezing
+        args: Arguments containing scaling factors
+        logger: Logger instance
+    """
+    # Get current learning rate
+    current_lr = optimizer.param_groups[0]['lr']
+    original_lr = current_lr
+    
+    # Determine scaling factor based on unfreezing type
+    scale_factor = 1.0
+    
+    # Define unfreezing categories
+    if group_name in ['patch_embed']:
+        # Minor unfreezing: small parameter increase
+        scale_factor = args.lr_scale_minor
+        category = "MINOR"
+    elif group_name in ['stage_0']:
+        # Minor to moderate unfreezing
+        scale_factor = args.lr_scale_minor
+        category = "MINOR"
+    elif group_name in ['stage_1']:
+        # Major unfreezing: significant parameter increase
+        scale_factor = args.lr_scale_major
+        category = "MAJOR"
+    elif group_name in ['stage_2', 'stage_3']:
+        # Massive unfreezing: huge parameter increase (10M+ parameters)
+        if trainable_params > 10_000_000:  # More than 10M parameters
+            scale_factor = args.lr_scale_massive
+            category = "MASSIVE"
+        else:
+            scale_factor = args.lr_scale_major
+            category = "MAJOR"
+    else:
+        # Unknown group, use moderate scaling
+        scale_factor = args.lr_scale_major
+        category = "UNKNOWN"
+    
+    # Apply scaling
+    new_lr = current_lr * scale_factor
+    
+    # Update all parameter groups
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = new_lr
+    
+    logger.info(f"🔧 Adaptive LR Scaling ({category}):")
+    logger.info(f"   Group: {group_name}")
+    logger.info(f"   Trainable params: {trainable_params:,}")
+    logger.info(f"   LR: {original_lr:.2e} → {new_lr:.2e} (×{scale_factor:.1f})")
+    logger.info(f"   Reason: {category} unfreezing detected")
 
 
 def analyze_dataset_imbalance(dataset: MVFoulsDataset) -> Dict[str, Dict]:
@@ -380,6 +453,16 @@ def main():
     parser.add_argument('--primary-tasks', nargs='+', default=['action_class', 'severity'],
                         help='List of primary task names (default: action_class severity)')
     
+    # Adaptive learning rate arguments
+    parser.add_argument('--adaptive-lr', action='store_true',
+                        help='Enable adaptive learning rate scaling during unfreezing')
+    parser.add_argument('--lr-scale-minor', type=float, default=1.5,
+                        help='LR multiplier for minor unfreezing (patch_embed, stage_0) (default: 1.5)')
+    parser.add_argument('--lr-scale-major', type=float, default=3.0,
+                        help='LR multiplier for major unfreezing (stage_1, stage_2, stage_3) (default: 3.0)')
+    parser.add_argument('--lr-scale-massive', type=float, default=5.0,
+                        help='LR multiplier for massive unfreezing (stage_2, stage_3 with >10M params) (default: 5.0)')
+    
     args = parser.parse_args()
     
     # Setup logging
@@ -565,6 +648,16 @@ def main():
             for task_name, weight in primary_task_weights.items():
                 logger.info(f"   {task_name}: {weight}x weight")
         
+        # Log adaptive learning rate configuration
+        if args.adaptive_lr:
+            logger.info("🔧 Adaptive learning rate scaling enabled:")
+            logger.info(f"   Base LR: {args.lr:.2e}")
+            logger.info(f"   Minor unfreezing scale: {args.lr_scale_minor}x")
+            logger.info(f"   Major unfreezing scale: {args.lr_scale_major}x")
+            logger.info(f"   Massive unfreezing scale: {args.lr_scale_massive}x")
+        else:
+            logger.info("⚠️  Adaptive learning rate scaling disabled (use --adaptive-lr to enable)")
+        
         # Setup mixed precision training
         use_amp = device.type == 'cuda'
         scaler = GradScaler() if use_amp else None
@@ -577,7 +670,7 @@ def main():
             logger.info(f"\n📅 Epoch {epoch + 1}/{args.epochs}")
             
             # Apply gradual unfreezing if scheduled
-            apply_gradual_unfreezing(model, epoch, unfreeze_schedule, logger, trainer, args)
+            apply_gradual_unfreezing(model, epoch, unfreeze_schedule, logger, trainer, args, optimizer)
             
             # Training
             model.train()
@@ -655,6 +748,7 @@ def main():
             writer.add_scalar('Loss/Train', avg_train_loss, epoch)
             writer.add_scalar('Loss/Val', val_loss, epoch)
             writer.add_scalar('Metric/Best', best_metric, epoch)
+            writer.add_scalar('LearningRate/Current', optimizer.param_groups[0]['lr'], epoch)
             
             # Log backbone unfreezing progress
             if args.freeze_mode == 'gradual':
