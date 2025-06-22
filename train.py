@@ -484,7 +484,15 @@ def main():
                 # Move data to device
                 videos = videos.to(device)
                 targets = targets.to(device)
-                logger.info(f"✓ Batch shape: videos={videos.shape}, targets type={type(targets)}")
+                
+                # For single-task training, extract the main task (offence detection)
+                if not model.multi_task:
+                    # Extract offence task (index 2) and convert to binary
+                    # 0: Missing/Empty -> 0, 1: Offence -> 1, 2: No offence -> 0
+                    offence_targets = targets[:, 2]  # Shape: [batch_size]
+                    targets = (offence_targets == 1).long()  # Convert to binary: 1 if "Offence", 0 otherwise
+                
+                logger.info(f"✓ Batch shape: videos={videos.shape}, targets shape={targets.shape}")
                 
                 # Test forward pass
                 if model.multi_task:
@@ -515,6 +523,12 @@ def main():
                 # Move data to device
                 videos = videos.to(device)
                 targets = targets.to(device)
+                
+                # For single-task training, extract the main task (offence detection)
+                if not model.multi_task:
+                    # Extract offence task (index 2) and convert to binary
+                    offence_targets = targets[:, 2]  # Shape: [batch_size]
+                    targets = (offence_targets == 1).long()  # Convert to binary: 1 if "Offence", 0 otherwise
                 
                 with torch.no_grad():
                     if model.multi_task:

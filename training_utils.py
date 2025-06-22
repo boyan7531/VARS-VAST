@@ -126,6 +126,14 @@ class MultiTaskTrainer:
             if isinstance(targets, dict):
                 targets = torch.cat(list(targets.values()), dim=1)
             targets = targets.to(self.device)
+            
+            # For single-task training, extract the main task (offence detection)
+            # Extract offence task (index 2) and convert to binary
+            # 0: Missing/Empty -> 0, 1: Offence -> 1, 2: No offence -> 0
+            if targets.dim() > 1 and targets.size(1) > 2:  # Multi-task format
+                offence_targets = targets[:, 2]  # Shape: [batch_size]
+                targets = (offence_targets == 1).long()  # Convert to binary
+            
             targets_dict = targets
         
         # Filter active tasks for curriculum learning
@@ -285,6 +293,11 @@ class MultiTaskTrainer:
                 else:
                     logits, extras = self.model(videos, return_dict=False)
                     targets = targets.to(self.device)
+                    
+                    # For single-task training, extract the main task (offence detection)
+                    if targets.dim() > 1 and targets.size(1) > 2:  # Multi-task format
+                        offence_targets = targets[:, 2]  # Shape: [batch_size]
+                        targets = (offence_targets == 1).long()  # Convert to binary
                     
                     # Compute loss
                     loss_dict = self.model.compute_loss(logits, targets, return_dict=True)
