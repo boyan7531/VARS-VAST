@@ -144,6 +144,7 @@ class MultiTaskTrainer:
         
         # Forward pass
         if self.model.multi_task:
+            print(f"DEBUG: Going into multi-task branch (model.multi_task={self.model.multi_task})")
             logits_dict, extras = self.model(videos, return_dict=True)
             
             # Filter logits for curriculum learning
@@ -157,7 +158,15 @@ class MultiTaskTrainer:
             total_loss = loss_dict['total_loss']
         else:
             logits, extras = self.model(videos, return_dict=False)
-            loss_dict = self.model.compute_loss(logits, filtered_targets, return_dict=True)
+            targets = targets.to(self.device)
+            
+            # For single-task training, extract the main task (offence detection)
+            if targets.dim() > 1 and targets.size(1) > 2:  # Multi-task format
+                offence_targets = targets[:, 2]  # Shape: [batch_size]
+                targets = (offence_targets == 1).long()  # Convert to binary
+            
+            # Compute loss
+            loss_dict = self.model.compute_loss(logits, targets, return_dict=True)
             total_loss = loss_dict['total_loss']
         
         # Scale loss for gradient accumulation

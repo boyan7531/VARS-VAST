@@ -6,12 +6,66 @@ Fix Corrupted Videos - Find and optionally remove corrupted videos from MVFouls 
 import argparse
 from pathlib import Path
 import logging
+import cv2
+
+try:
+    import decord
+    DECORD_AVAILABLE = True
+except ImportError:
+    DECORD_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+def test_video_loading(video_path: Path) -> bool:
+    """Test if a video can actually be loaded and read."""
+    # Test 1: File size check (very small files)
+    try:
+        file_size = video_path.stat().st_size
+        if file_size < 1024:  # Less than 1KB
+            logger.warning(f"Found tiny corrupted video ({file_size} bytes): {video_path}")
+            return False
+    except Exception as e:
+        logger.error(f"Error checking file size {video_path}: {e}")
+        return False
+    
+    # Test 2: Try loading with OpenCV (most reliable)
+    try:
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            logger.warning(f"OpenCV cannot open: {video_path}")
+            cap.release()
+            return False
+        
+        # Try to read first frame
+        ret, frame = cap.read()
+        cap.release()
+        
+        if not ret or frame is None:
+            logger.warning(f"OpenCV cannot read frames from: {video_path}")
+            return False
+            
+    except Exception as e:
+        logger.warning(f"OpenCV error for {video_path}: {e}")
+        return False
+    
+    # Test 3: Try loading with decord if available
+    if DECORD_AVAILABLE:
+        try:
+            vr = decord.VideoReader(str(video_path))
+            # Try to read first frame
+            frame = vr[0].asnumpy()
+            if frame is None or frame.size == 0:
+                logger.warning(f"Decord cannot read frames from: {video_path}")
+                return False
+        except Exception as e:
+            logger.warning(f"Decord error for {video_path}: {e}")
+            return False
+    
+    return True
+
 def find_corrupted_videos(data_dir: Path, splits: list = None):
-    """Find all corrupted (small size) videos in the dataset."""
+    """Find all corrupted videos in the dataset by actually testing video loading."""
     if splits is None:
         splits = ['train', 'test', 'valid', 'challenge']
     
@@ -33,15 +87,13 @@ def find_corrupted_videos(data_dir: Path, splits: list = None):
                 for video_file in action_dir.glob("*.mp4"):
                     total_videos += 1
                     
-                    try:
-                        file_size = video_file.stat().st_size
-                        # Consider videos under 1KB as corrupted (normal videos are MB in size)
-                        if file_size < 1024:
-                            corrupted_videos.append(video_file)
-                            logger.warning(f"Found corrupted video ({file_size} bytes): {video_file}")
-                    except Exception as e:
-                        logger.error(f"Error checking {video_file}: {e}")
+                    # Test if video can be loaded
+                    if not test_video_loading(video_file):
                         corrupted_videos.append(video_file)
+                    
+                    # Progress indicator
+                    if total_videos % 100 == 0:
+                        logger.info(f"Tested {total_videos} videos, found {len(corrupted_videos)} corrupted")
     
     return corrupted_videos, total_videos
 
@@ -91,6 +143,7 @@ def main():
     logger.info(f"Scanning dataset for corrupted videos...")
     logger.info(f"Data directory: {data_dir}")
     logger.info(f"Splits: {args.splits}")
+    logger.info(f"Available decoders: OpenCV={DECORD_AVAILABLE}")
     
     # Find corrupted videos
     corrupted_videos, total_videos = find_corrupted_videos(data_dir, args.splits)

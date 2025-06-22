@@ -112,9 +112,18 @@ def create_dataloaders(args, transforms):
     
     # Create validation dataset
     logger.info("Creating validation dataset...")
+    # Determine validation split from val_dir argument
+    if args.val_dir and 'test_720p' in args.val_dir:
+        val_split = 'test'
+    elif args.val_dir and 'valid_720p' in args.val_dir:
+        val_split = 'valid'
+    else:
+        val_split = 'valid'  # Default fallback
+    
+    logger.info(f"Using validation split: {val_split}")
     val_dataset = MVFoulsDataset(
         root_dir=root_dir,
-        split='valid',
+        split=val_split,
         transform=transforms['val'],
         load_annotations=True,
         num_frames=args.max_frames
