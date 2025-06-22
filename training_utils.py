@@ -286,18 +286,26 @@ class MultiTaskTrainer:
                 if self.model.multi_task:
                     logits_dict, extras = self.model(videos, return_dict=True)
                     
-                    # Move targets to device
+                    # Handle target format for multi-task
                     if isinstance(targets, dict):
-                        targets = {k: v.to(self.device) for k, v in targets.items()}
+                        targets_dict = {k: v.to(self.device) for k, v in targets.items()}
                     else:
+                        # Convert tensor to dict format for multi-task
                         targets = targets.to(self.device)
+                        if get_task_metadata is not None:
+                            metadata = get_task_metadata()
+                            targets_dict = {}
+                            for i, task_name in enumerate(metadata['task_names']):
+                                targets_dict[task_name] = targets[:, i]
+                        else:
+                            targets_dict = {'default': targets[:, 0]}
                     
                     # Compute loss
-                    loss_dict = self.model.compute_loss(logits_dict, targets, return_dict=True)
+                    loss_dict = self.model.compute_loss(logits_dict, targets_dict, return_dict=True)
                     eval_losses.append(loss_dict['total_loss'].item())
                     
                     all_logits.append(logits_dict)
-                    all_targets.append(targets)
+                    all_targets.append(targets_dict)
                 else:
                     logits, extras = self.model(videos, return_dict=False)
                     targets = targets.to(self.device)
