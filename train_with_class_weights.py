@@ -388,7 +388,7 @@ def main():
                 train_metrics.append(metrics)
                 
                 if (batch_idx + 1) % 50 == 0:
-                    avg_loss = sum(m['loss'] for m in train_metrics[-50:]) / min(50, len(train_metrics))
+                    avg_loss = sum(m['total_loss'] for m in train_metrics[-50:]) / min(50, len(train_metrics))
                     logger.info(f"  Batch {batch_idx + 1}/{len(train_loader)}: Loss = {avg_loss:.4f}")
             
             # Validation
@@ -396,7 +396,7 @@ def main():
             val_results = trainer.evaluate(val_loader, compute_detailed_metrics=True)
             
             # Log metrics
-            avg_train_loss = sum(m['loss'] for m in train_metrics) / len(train_metrics)
+            avg_train_loss = sum(m['total_loss'] for m in train_metrics) / len(train_metrics)
             val_loss = val_results['avg_loss']
             
             logger.info(f"📊 Epoch {epoch + 1} Results:")
