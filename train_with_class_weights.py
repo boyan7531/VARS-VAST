@@ -16,11 +16,13 @@ import logging
 import sys
 from pathlib import Path
 from typing import Dict, Any, Optional
+from contextlib import nullcontext
 
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from torch.cuda.amp import autocast, GradScaler
 
 # Add project root to path
 sys.path.append(str(Path(__file__).parent))
@@ -141,7 +143,8 @@ def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule:
                 pin_memory=True
             )
             
-            logger.info(f"   Updated data loaders with batch size {args.unfreeze_batch_size}")
+            logger.info(f"   ✅ Updated data loaders with batch size {args.unfreeze_batch_size}")
+            logger.info(f"   📊 New train batches: {len(trainer.train_loader)}, val batches: {len(trainer.val_loader)}")
         
         # Unfreeze next group
         model.unfreeze_backbone_gradually()
@@ -499,6 +502,10 @@ def main():
             max_grad_norm=1.0
         )
         
+        # Store data loaders in trainer so they can be updated during gradual unfreezing
+        trainer.train_loader = train_loader
+        trainer.val_loader = val_loader
+        
         # Setup output directory
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -520,6 +527,12 @@ def main():
         # Training loop
         logger.info("🎯 Starting training with balanced losses...")
         
+        # Setup mixed precision training
+        use_amp = device.type == 'cuda'
+        scaler = GradScaler() if use_amp else None
+        if use_amp:
+            logger.info("🚀 Automatic Mixed Precision (AMP) enabled")
+        
         best_metric = 0.0
         
         for epoch in range(args.epochs):
@@ -532,17 +545,19 @@ def main():
             model.train()
             train_metrics = []
             
-            for batch_idx, (videos, targets) in enumerate(train_loader):
-                metrics = trainer.train_step(videos, targets)
+            for batch_idx, (videos, targets) in enumerate(trainer.train_loader):
+                # Use mixed precision if available
+                with autocast() if use_amp else nullcontext():
+                    metrics = trainer.train_step(videos, targets, scaler=scaler if use_amp else None)
                 train_metrics.append(metrics)
                 
                 if (batch_idx + 1) % 50 == 0:
                     avg_loss = sum(m['total_loss'] for m in train_metrics[-50:]) / min(50, len(train_metrics))
-                    logger.info(f"  Batch {batch_idx + 1}/{len(train_loader)}: Loss = {avg_loss:.4f}")
+                    logger.info(f"  Batch {batch_idx + 1}/{len(trainer.train_loader)}: Loss = {avg_loss:.4f}")
             
             # Validation
             logger.info("🔬 Running validation...")
-            val_results = trainer.evaluate(val_loader, compute_detailed_metrics=True)
+            val_results = trainer.evaluate(trainer.val_loader, compute_detailed_metrics=True)
             
             # Log metrics
             avg_train_loss = sum(m['total_loss'] for m in train_metrics) / len(train_metrics)

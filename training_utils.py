@@ -91,7 +91,8 @@ class MultiTaskTrainer:
     def train_step(
         self,
         videos: torch.Tensor,
-        targets: Union[torch.Tensor, Dict[str, torch.Tensor]]
+        targets: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        scaler: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
         Perform a single training step.
@@ -99,6 +100,7 @@ class MultiTaskTrainer:
         Args:
             videos: Input video tensor (B, C, T, H, W) or (B, T, H, W, C)
             targets: Target tensor or dict for each task
+            scaler: Optional GradScaler for mixed precision training
             
         Returns:
             Dict with loss and metrics information
@@ -171,16 +173,25 @@ class MultiTaskTrainer:
         # Scale loss for gradient accumulation
         scaled_loss = total_loss / self.gradient_accumulation_steps
         
-        # Backward pass
-        scaled_loss.backward()
+        # Backward pass with optional mixed precision
+        if scaler is not None:
+            scaler.scale(scaled_loss).backward()
+        else:
+            scaled_loss.backward()
         
         # Gradient accumulation
         if (self.step + 1) % self.gradient_accumulation_steps == 0:
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.max_grad_norm)
+            if scaler is not None:
+                # Mixed precision gradient clipping and optimizer step
+                scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.max_grad_norm)
+                scaler.step(self.optimizer)
+                scaler.update()
+            else:
+                # Standard gradient clipping and optimizer step
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.max_grad_norm)
+                self.optimizer.step()
             
-            # Optimizer step
-            self.optimizer.step()
             self.optimizer.zero_grad()
             
             # Update per-task schedulers
