@@ -124,7 +124,11 @@ def create_balanced_model(
                 
                 # Use recommended class weights
                 if config['class_weights'] is not None:
-                    task_weights[task_name] = config['class_weights']
+                    # Ensure weights are tensors and will be moved to device later
+                    weights = config['class_weights']
+                    if not isinstance(weights, torch.Tensor):
+                        weights = torch.tensor(weights, dtype=torch.float32)
+                    task_weights[task_name] = weights
                 
                 # Use recommended loss type
                 loss_types_per_task.append(config['loss_type'])
@@ -149,7 +153,11 @@ def create_balanced_model(
         class_weights = None
         if imbalance_analysis and 'offence' in imbalance_analysis:
             config = imbalance_analysis['offence']['recommended_config']
-            class_weights = config['class_weights']
+            if config['class_weights'] is not None:
+                weights = config['class_weights']
+                if not isinstance(weights, torch.Tensor):
+                    weights = torch.tensor(weights, dtype=torch.float32)
+                class_weights = weights
             loss_type = config['loss_type']
         else:
             loss_type = 'focal'
@@ -294,6 +302,15 @@ def main():
             optimizer,
             T_max=args.epochs
         )
+        
+        # Move model to device and ensure class weights are on correct device
+        model.to(device)
+        
+        # Move class weights to device if they exist
+        if hasattr(model.head, 'task_weights') and model.head.task_weights:
+            for task_name, weights in model.head.task_weights.items():
+                if isinstance(weights, torch.Tensor):
+                    model.head.task_weights[task_name] = weights.to(device)
         
         # Create trainer
         trainer = MultiTaskTrainer(
