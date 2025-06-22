@@ -481,6 +481,9 @@ def main():
                 if batch_idx >= 1:  # Only test one batch
                     break
                 videos, targets = batch
+                # Move data to device
+                videos = videos.to(device)
+                targets = targets.to(device)
                 logger.info(f"✓ Batch shape: videos={videos.shape}, targets type={type(targets)}")
                 
                 # Test forward pass
@@ -509,6 +512,9 @@ def main():
                 if batch_idx >= 1:  # Only test one batch
                     break
                 videos, targets = batch
+                # Move data to device
+                videos = videos.to(device)
+                targets = targets.to(device)
                 
                 with torch.no_grad():
                     if model.multi_task:
