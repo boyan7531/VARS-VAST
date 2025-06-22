@@ -21,3 +21,5 @@ tests/
 *.ptl
 *.pthl
 *.pkl
+
+outputs/
