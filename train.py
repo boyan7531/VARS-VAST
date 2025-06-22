@@ -340,7 +340,7 @@ def main():
 
     
     # Training configuration
-    parser.add_argument('--num-workers', type=int, default=4,
+    parser.add_argument('--num-workers', type=int, default=8,
                         help='Number of data loading workers')
     parser.add_argument('--gradient-accumulation-steps', type=int, default=1,
                         help='Gradient accumulation steps')
