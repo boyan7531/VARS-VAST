@@ -94,7 +94,7 @@ def get_unfreeze_schedule(total_epochs: int, freeze_mode: str) -> Dict[int, str]
     return schedule
 
 
-def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule: Dict[int, str], logger):
+def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule: Dict[int, str], logger, trainer=None, args=None):
     """
     Apply gradual unfreezing based on the schedule.
     
@@ -103,12 +103,45 @@ def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule:
         epoch: Current epoch (0-indexed)
         unfreeze_schedule: Schedule mapping epochs to unfreeze actions
         logger: Logger instance
+        trainer: Optional trainer instance for batch size reduction
+        args: Optional args for batch size configuration
     """
     if epoch in unfreeze_schedule and model.backbone.freeze_mode == 'gradual':
         group_name = unfreeze_schedule[epoch]
         
         # Get current stage before unfreezing
         current_stage = model.backbone.get_current_unfreeze_stage()
+        
+        # Check if we need to reduce batch size on first unfreeze
+        if (args and trainer and args.reduce_batch_on_unfreeze and 
+            current_stage == -1 and hasattr(trainer, 'train_loader')):
+            
+            logger.info(f"🔄 Reducing batch size from {args.batch_size} to {args.unfreeze_batch_size} for backbone unfreezing")
+            
+            # Get original datasets from the trainer's data loaders
+            train_dataset = trainer.train_loader.dataset
+            val_dataset = trainer.val_loader.dataset
+            
+            # Create new data loaders with reduced batch size
+            from torch.utils.data import DataLoader
+            
+            trainer.train_loader = DataLoader(
+                train_dataset, 
+                batch_size=args.unfreeze_batch_size, 
+                shuffle=True, 
+                num_workers=4, 
+                pin_memory=True,
+                drop_last=True
+            )
+            trainer.val_loader = DataLoader(
+                val_dataset, 
+                batch_size=args.unfreeze_batch_size, 
+                shuffle=False, 
+                num_workers=4, 
+                pin_memory=True
+            )
+            
+            logger.info(f"   Updated data loaders with batch size {args.unfreeze_batch_size}")
         
         # Unfreeze next group
         model.unfreeze_backbone_gradually()
@@ -325,6 +358,10 @@ def main():
                        help='Disable automatic gradual unfreezing')
     parser.add_argument('--unfreeze-schedule', type=str, 
                        help='Custom unfreeze schedule as JSON (e.g., {"3": "patch_embed", "6": "stage_0"})')
+    parser.add_argument('--reduce-batch-on-unfreeze', action='store_true',
+                       help='Automatically reduce batch size when unfreezing backbone')
+    parser.add_argument('--unfreeze-batch-size', type=int, default=4,
+                       help='Batch size to use after unfreezing (default: 4)')
     
     # Other arguments
     parser.add_argument('--output-dir', type=str, default='./outputs_balanced', help='Output directory')
@@ -389,7 +426,8 @@ def main():
         logger.info("🏗️ Creating balanced model...")
         model = create_balanced_model(
             multi_task=args.multi_task,
-            imbalance_analysis=imbalance_analysis
+            imbalance_analysis=imbalance_analysis,
+            backbone_checkpointing=True  # Enable gradient checkpointing
         )
         
         # Create unfreezing schedule
@@ -488,7 +526,7 @@ def main():
             logger.info(f"\n📅 Epoch {epoch + 1}/{args.epochs}")
             
             # Apply gradual unfreezing if scheduled
-            apply_gradual_unfreezing(model, epoch, unfreeze_schedule, logger)
+            apply_gradual_unfreezing(model, epoch, unfreeze_schedule, logger, trainer, args)
             
             # Training
             model.train()
