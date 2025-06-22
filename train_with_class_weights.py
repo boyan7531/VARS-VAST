@@ -254,6 +254,7 @@ def analyze_dataset_imbalance(dataset: MVFoulsDataset) -> Dict[str, Dict]:
 def create_balanced_model(
     multi_task: bool = True,
     imbalance_analysis: Optional[Dict] = None,
+    primary_task_weights: Optional[Dict[str, float]] = None,
     **model_kwargs
 ) -> MVFoulsModel:
     """Create a model with proper class imbalance handling."""
@@ -369,7 +370,15 @@ def main():
     # Other arguments
     parser.add_argument('--output-dir', type=str, default='./outputs_balanced', help='Output directory')
     parser.add_argument('--device', type=str, default='auto', help='Device to use')
-    parser.add_argument('--verbose', action='store_true', help='Verbose logging')
+    parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
+    
+    # Primary task weighting arguments
+    parser.add_argument('--primary-task-weight', type=float, default=3.0,
+                        help='Weight multiplier for primary tasks (action_class, severity) (default: 3.0)')
+    parser.add_argument('--auxiliary-task-weight', type=float, default=1.0,
+                        help='Weight multiplier for auxiliary tasks (default: 1.0)')
+    parser.add_argument('--primary-tasks', nargs='+', default=['action_class', 'severity'],
+                        help='List of primary task names (default: action_class severity)')
     
     args = parser.parse_args()
     
@@ -427,9 +436,31 @@ def main():
         
         # Create balanced model
         logger.info("🏗️ Creating balanced model...")
+        
+        # Create primary task weighting
+        primary_task_weights = {}
+        if args.multi_task:
+            logger.info(f"🎯 Setting up primary task weighting:")
+            logger.info(f"   Primary tasks: {args.primary_tasks} (weight: {args.primary_task_weight}x)")
+            logger.info(f"   Auxiliary tasks: all others (weight: {args.auxiliary_task_weight}x)")
+            
+            # Get all task names from metadata
+            from utils import get_task_metadata
+            metadata = get_task_metadata()
+            all_tasks = metadata['task_names']
+            
+            for task_name in all_tasks:
+                if task_name in args.primary_tasks:
+                    primary_task_weights[task_name] = args.primary_task_weight
+                else:
+                    primary_task_weights[task_name] = args.auxiliary_task_weight
+            
+            logger.info(f"   Task weights: {primary_task_weights}")
+        
         model = create_balanced_model(
             multi_task=args.multi_task,
             imbalance_analysis=imbalance_analysis,
+            primary_task_weights=primary_task_weights,
             backbone_checkpointing=True  # Enable gradient checkpointing
         )
         
@@ -499,7 +530,8 @@ def main():
             log_interval=50,
             eval_interval=1,
             gradient_accumulation_steps=1,
-            max_grad_norm=1.0
+            max_grad_norm=1.0,
+            primary_task_weights=primary_task_weights
         )
         
         # Store data loaders in trainer so they can be updated during gradual unfreezing
@@ -526,6 +558,12 @@ def main():
         
         # Training loop
         logger.info("🎯 Starting training with balanced losses...")
+        
+        # Log primary task weighting if enabled
+        if args.multi_task and primary_task_weights:
+            logger.info("🎯 Primary task weighting enabled:")
+            for task_name, weight in primary_task_weights.items():
+                logger.info(f"   {task_name}: {weight}x weight")
         
         # Setup mixed precision training
         use_amp = device.type == 'cuda'

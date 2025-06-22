@@ -41,7 +41,8 @@ class MultiTaskTrainer:
         log_interval: int = 100,
         eval_interval: int = 1000,
         gradient_accumulation_steps: int = 1,
-        max_grad_norm: float = 1.0
+        max_grad_norm: float = 1.0,
+        primary_task_weights: Optional[Dict[str, float]] = None
     ):
         """
         Initialize multi-task trainer.
@@ -57,6 +58,7 @@ class MultiTaskTrainer:
             eval_interval: Steps between evaluation
             gradient_accumulation_steps: Steps for gradient accumulation
             max_grad_norm: Maximum gradient norm for clipping
+            primary_task_weights: Optional weights for primary vs auxiliary tasks
         """
         self.model = model
         self.optimizer = optimizer
@@ -68,6 +70,7 @@ class MultiTaskTrainer:
         self.eval_interval = eval_interval
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.max_grad_norm = max_grad_norm
+        self.primary_task_weights = primary_task_weights or {}
         
         # Training state
         self.step = 0
@@ -156,7 +159,20 @@ class MultiTaskTrainer:
             
             # Compute loss
             loss_dict = self.model.compute_loss(filtered_logits, filtered_targets, return_dict=True)
-            total_loss = loss_dict['total_loss']
+            
+            # Apply primary task weighting if specified
+            if self.primary_task_weights:
+                # Recompute total loss with primary task weights
+                weighted_total_loss = 0.0
+                for task_name, task_loss in loss_dict.items():
+                    if task_name != 'total_loss' and isinstance(task_loss, torch.Tensor):
+                        weight = self.primary_task_weights.get(task_name, 1.0)
+                        weighted_total_loss += weight * task_loss
+                
+                total_loss = weighted_total_loss
+                loss_dict['total_loss'] = total_loss  # Update the loss dict
+            else:
+                total_loss = loss_dict['total_loss']
         else:
             logits, extras = self.model(videos, return_dict=False)
             targets = targets.to(self.device)
