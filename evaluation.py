@@ -52,7 +52,14 @@ def load_model_from_checkpoint(checkpoint_path: str, device: torch.device) -> MV
     logger = logging.getLogger(__name__)
     
     logger.info(f"Loading checkpoint from: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    try:
+        # Try with weights_only=True first (PyTorch 2.6+ default)
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    except Exception as e:
+        logger.warning(f"Failed to load with weights_only=True: {e}")
+        logger.info("Retrying with weights_only=False (trusted source)")
+        # Fall back to weights_only=False for compatibility
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
     # Extract model configuration from checkpoint metadata
     if 'metadata' in checkpoint and 'args' in checkpoint['metadata']:
