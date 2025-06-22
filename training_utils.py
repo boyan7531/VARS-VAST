@@ -283,7 +283,9 @@ class MultiTaskTrainer:
         self,
         dataloader: DataLoader,
         max_batches: Optional[int] = None,
-        compute_detailed_metrics: bool = True
+        compute_detailed_metrics: bool = True,
+        compute_task_metrics: Optional[callable] = None,
+        format_metrics_table: Optional[callable] = None
     ) -> Dict[str, Any]:
         """
         Evaluate the model on a dataset.

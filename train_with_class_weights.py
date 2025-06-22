@@ -36,7 +36,9 @@ from utils import (
     compute_class_weights, 
     get_recommended_loss_config,
     get_task_class_weights,
-    analyze_class_distribution
+    analyze_class_distribution,
+    compute_task_metrics,
+    format_metrics_table
 )
 
 
@@ -688,7 +690,12 @@ def main():
             
             # Validation
             logger.info("🔬 Running validation...")
-            val_results = trainer.evaluate(trainer.val_loader, compute_detailed_metrics=True)
+            val_results = trainer.evaluate(
+                trainer.val_loader, 
+                compute_detailed_metrics=True,
+                compute_task_metrics=compute_task_metrics,
+                format_metrics_table=format_metrics_table
+            )
             
             # Log metrics
             avg_train_loss = sum(m['total_loss'] for m in train_metrics) / len(train_metrics)
@@ -713,7 +720,7 @@ def main():
                            f"{trainable_params:,} trainable ({trainable_pct:.1f}%)")
             
             # Save best model
-            current_metric = val_results.get('overall_accuracy', 1.0 - val_loss)
+            current_metric = val_results.get('overall_metrics', {}).get('accuracy', 1.0 - val_loss)
             if current_metric > best_metric:
                 best_metric = current_metric
                 
