@@ -93,7 +93,7 @@ def analyze_dataset_imbalance(dataset: MVFoulsDataset) -> Dict[str, Dict]:
                 # Add at least one dummy sample for missing classes to ensure proper weight calculation
                 dummy_labels.append(class_idx)
         
-        config = get_recommended_loss_config(dummy_labels, num_classes=expected_num_classes)
+        config = get_recommended_loss_config(dummy_labels, num_classes=expected_num_classes, severity_threshold=20.0)
         
         # Ensure class weights have the correct length
         if config['class_weights'] is not None:
@@ -108,7 +108,13 @@ def analyze_dataset_imbalance(dataset: MVFoulsDataset) -> Dict[str, Dict]:
                 else:
                     # Truncate if too long (shouldn't happen)
                     weights = weights[:expected_num_classes]
-                config['class_weights'] = weights
+            
+            # Scale down weights to be less aggressive (prevent overcompensation)
+            # Use square root to reduce the strength while maintaining relative differences
+            weights = torch.sqrt(weights)
+            # Normalize to have mean of 1.0
+            weights = weights / weights.mean()
+            config['class_weights'] = weights
         
         recommendations[task_name] = {
             'imbalance_ratio': imbalance_ratio,
