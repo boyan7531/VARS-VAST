@@ -334,6 +334,7 @@ class MVFoulsDataset(Dataset):
     def _build_dataset_index(self) -> List[ClipInfo]:
         """Build index of all individual video clips in the dataset."""
         dataset_index = []
+        corrupted_count = 0
         
         for action_dir in self.action_dirs:
             action_id = action_dir.name.split('_')[1]
@@ -347,6 +348,17 @@ class MVFoulsDataset(Dataset):
                 
             # Create a separate entry for each individual clip (always use all clips)
             for clip_path in video_files:
+                # Skip corrupted videos (very small files under 1KB)
+                try:
+                    file_size = clip_path.stat().st_size
+                    if file_size < 1024:  # Less than 1KB indicates corruption
+                        logging.warning(f"Skipping corrupted video ({file_size} bytes): {clip_path}")
+                        corrupted_count += 1
+                        continue
+                except Exception as e:
+                    logging.warning(f"Error checking file {clip_path}: {e}")
+                    continue
+                
                 clip_info = ClipInfo(
                     action_id=action_id,
                     action_dir=action_dir,
@@ -356,6 +368,9 @@ class MVFoulsDataset(Dataset):
                     numeric_labels=None  # Will be populated by _process_annotations
                 )
                 dataset_index.append(clip_info)
+        
+        if corrupted_count > 0:
+            logging.info(f"Excluded {corrupted_count} corrupted videos from dataset")
         
         return dataset_index
     
@@ -596,11 +611,22 @@ class MVFoulsDataset(Dataset):
                 except Exception as e:
                     logging.warning(f"Failed to load cache {cache_path}: {e}")
         
+        # Check if file is corrupted before attempting to load
+        try:
+            file_size = video_path.stat().st_size
+            if file_size < 1024:  # Less than 1KB indicates corruption
+                logging.error(f"Video file is corrupted ({file_size} bytes): {video_path}")
+                raise ValueError(f"Corrupted video file: {video_path}")
+        except Exception as e:
+            logging.error(f"Cannot access video file {video_path}: {e}")
+            raise
+        
         # Load video using best available method
         if DECORD_AVAILABLE:
             try:
                 frames = self._load_video_decord(video_path)
             except Exception as e:
+                logging.error(f"Error in _load_video_decord for {video_path}: {e}")
                 logging.warning(f"decord failed for {video_path}: {e}, falling back to OpenCV")
                 frames = self._load_video_opencv(video_path)
         elif PYAV_AVAILABLE:
