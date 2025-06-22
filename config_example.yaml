@@ -28,7 +28,7 @@ warmup_steps: 1000  # For warmup_cosine scheduler
 
 # Data Processing
 max_frames: 32    # Maximum frames per video
-fps: 8           # Target FPS for video processing
+fps: 25           # Target FPS for video processing
 image_size: 224  # Input image size
 
 
