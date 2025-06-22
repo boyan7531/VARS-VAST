@@ -24,7 +24,8 @@ def compute_class_weights(
     method: str = 'balanced',
     beta: float = 0.9999,
     smooth: float = 1e-7,
-    return_dict: bool = False
+    return_dict: bool = False,
+    num_classes: Optional[int] = None
 ) -> Union[torch.Tensor, Dict[int, float]]:
     """
     Compute class weights for imbalanced datasets using various strategies.
@@ -40,6 +41,7 @@ def compute_class_weights(
         beta: Beta parameter for effective number method (default: 0.9999)
         smooth: Smoothing factor to avoid division by zero (default: 1e-7)
         return_dict: If True, return dict mapping class_id -> weight
+        num_classes: Expected number of classes (if None, inferred from labels)
         
     Returns:
         torch.Tensor or Dict: Class weights in same order as unique classes
@@ -66,12 +68,28 @@ def compute_class_weights(
     # Get class counts
     unique_classes, counts = np.unique(labels_np, return_counts=True)
     n_samples = len(labels_np)
-    n_classes = len(unique_classes)
+    
+    # Handle expected number of classes
+    if num_classes is not None:
+        # Ensure we have counts for all expected classes
+        full_counts = np.zeros(num_classes, dtype=int)
+        for cls, count in zip(unique_classes, counts):
+            if cls < num_classes:
+                full_counts[cls] = count
+        
+        # Update variables to use full class range
+        unique_classes = np.arange(num_classes)
+        counts = full_counts
+        n_classes = num_classes
+    else:
+        n_classes = len(unique_classes)
     
     # Compute weights based on method
     if method == 'balanced':
         # sklearn-style balanced weights: n_samples / (n_classes * class_count)
-        weights = n_samples / (n_classes * counts)
+        # For zero counts, use a small value to avoid division by zero
+        safe_counts = np.where(counts == 0, smooth, counts)
+        weights = n_samples / (n_classes * safe_counts)
         
     elif method == 'inverse':
         # Simple inverse frequency
@@ -84,13 +102,16 @@ def compute_class_weights(
     elif method == 'effective':
         # Effective number of samples for extreme imbalance
         # Paper: "Class-Balanced Loss Based on Effective Number of Samples"
-        effective_num = 1.0 - np.power(beta, counts)
+        # For zero counts, use minimal effective number
+        safe_counts = np.where(counts == 0, 1, counts)
+        effective_num = 1.0 - np.power(beta, safe_counts)
         weights = (1.0 - beta) / (effective_num + smooth)
         
     elif method == 'focal':
         # Weights designed to work well with focal loss
         # Less aggressive than inverse, more than sqrt_inverse
-        freq = counts / n_samples
+        safe_counts = np.where(counts == 0, smooth * n_samples, counts)
+        freq = safe_counts / n_samples
         weights = 1.0 / np.power(freq + smooth, 0.25)
         
     else:
@@ -209,7 +230,8 @@ def analyze_class_distribution(
 
 def get_recommended_loss_config(
     labels: Union[torch.Tensor, np.ndarray, List],
-    severity_threshold: float = 5.0
+    severity_threshold: float = 5.0,
+    num_classes: Optional[int] = None
 ) -> Dict:
     """
     Get recommended loss configuration based on class imbalance severity.
@@ -217,6 +239,7 @@ def get_recommended_loss_config(
     Args:
         labels: Ground truth labels
         severity_threshold: Imbalance ratio threshold for recommendations
+        num_classes: Expected number of classes (if None, inferred from labels)
         
     Returns:
         Dict: Recommended configuration with loss_type, class_weights, etc.
@@ -235,7 +258,7 @@ def get_recommended_loss_config(
         }
     elif max_imbalance < severity_threshold:
         # Moderate imbalance
-        weights = compute_class_weights(labels, method='balanced')
+        weights = compute_class_weights(labels, method='balanced', num_classes=num_classes)
         config = {
             'loss_type': 'ce',
             'class_weights': weights,
@@ -245,7 +268,7 @@ def get_recommended_loss_config(
         }
     else:
         # Severe imbalance
-        weights = compute_class_weights(labels, method='effective')
+        weights = compute_class_weights(labels, method='effective', num_classes=num_classes)
         config = {
             'loss_type': 'focal',
             'class_weights': weights,

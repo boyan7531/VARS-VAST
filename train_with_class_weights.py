@@ -58,10 +58,22 @@ def analyze_dataset_imbalance(dataset: MVFoulsDataset) -> Dict[str, Dict]:
     # Get dataset statistics
     stats = dataset.get_task_statistics()
     
+    # Get task metadata for expected number of classes
+    metadata = get_task_metadata()
+    
     recommendations = {}
     
     for task_name, task_stats in stats.items():
         class_counts = task_stats['class_counts']
+        expected_num_classes = len(metadata['class_names'][task_name])
+        
+        # Ensure class_counts has the right length (pad with zeros if needed)
+        if len(class_counts) < expected_num_classes:
+            class_counts = class_counts + [0] * (expected_num_classes - len(class_counts))
+        elif len(class_counts) > expected_num_classes:
+            # This shouldn't happen, but just in case
+            class_counts = class_counts[:expected_num_classes]
+            
         total_samples = sum(class_counts)
         
         if total_samples == 0:
@@ -72,12 +84,31 @@ def analyze_dataset_imbalance(dataset: MVFoulsDataset) -> Dict[str, Dict]:
         min_count = min([c for c in class_counts if c > 0]) if any(c > 0 for c in class_counts) else 1
         imbalance_ratio = max_count / min_count if min_count > 0 else float('inf')
         
-        # Get recommendations
+        # Create dummy labels for weight calculation, ensuring all classes are represented
         dummy_labels = []
         for class_idx, count in enumerate(class_counts):
-            dummy_labels.extend([class_idx] * count)
+            if count > 0:
+                dummy_labels.extend([class_idx] * count)
+            else:
+                # Add at least one dummy sample for missing classes to ensure proper weight calculation
+                dummy_labels.append(class_idx)
         
-        config = get_recommended_loss_config(dummy_labels)
+        config = get_recommended_loss_config(dummy_labels, num_classes=expected_num_classes)
+        
+        # Ensure class weights have the correct length
+        if config['class_weights'] is not None:
+            weights = config['class_weights']
+            if len(weights) != expected_num_classes:
+                # Fix weight tensor to have correct number of classes
+                if len(weights) < expected_num_classes:
+                    # Pad with mean weight for missing classes
+                    mean_weight = float(torch.mean(weights))
+                    padding = [mean_weight] * (expected_num_classes - len(weights))
+                    weights = torch.cat([weights, torch.tensor(padding, dtype=torch.float32)])
+                else:
+                    # Truncate if too long (shouldn't happen)
+                    weights = weights[:expected_num_classes]
+                config['class_weights'] = weights
         
         recommendations[task_name] = {
             'imbalance_ratio': imbalance_ratio,
