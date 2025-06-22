@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Any, Tuple, Callable, Union
 import numpy as np
 import time
 from collections import defaultdict
+from tqdm import tqdm
 
 try:
     from utils import get_task_metadata, compute_task_metrics, format_metrics_table
@@ -303,8 +304,17 @@ class MultiTaskTrainer:
         all_logits = []
         all_targets = []
         
+        # Create progress bar for evaluation
+        eval_pbar = tqdm(
+            dataloader,
+            desc="Validation",
+            leave=False,
+            ncols=100,
+            unit="batch"
+        )
+        
         with torch.no_grad():
-            for batch_idx, batch in enumerate(dataloader):
+            for batch_idx, batch in enumerate(eval_pbar):
                 if max_batches and batch_idx >= max_batches:
                     break
                     

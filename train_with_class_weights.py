@@ -23,6 +23,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torch.cuda.amp import autocast, GradScaler
+from tqdm import tqdm
 
 # Add project root to path
 sys.path.append(str(Path(__file__).parent))
@@ -669,7 +670,9 @@ def main():
         best_metric = 0.0
         
         for epoch in range(args.epochs):
-            logger.info(f"\n📅 Epoch {epoch + 1}/{args.epochs}")
+            print(f"\n{'='*80}")
+            logger.info(f"📅 Epoch {epoch + 1}/{args.epochs}")
+            print(f"{'='*80}")
             
             # Apply gradual unfreezing if scheduled
             apply_gradual_unfreezing(model, epoch, unfreeze_schedule, logger, trainer, args, optimizer)
@@ -678,18 +681,31 @@ def main():
             model.train()
             train_metrics = []
             
-            for batch_idx, (videos, targets) in enumerate(trainer.train_loader):
+            # Create progress bar for training
+            train_pbar = tqdm(
+                trainer.train_loader, 
+                desc=f"Epoch {epoch + 1}/{args.epochs} [Train]",
+                leave=False,
+                ncols=100,
+                unit="batch"
+            )
+            
+            for batch_idx, (videos, targets) in enumerate(train_pbar):
                 # Use mixed precision if available
                 with autocast() if use_amp else nullcontext():
                     metrics = trainer.train_step(videos, targets, scaler=scaler if use_amp else None)
                 train_metrics.append(metrics)
                 
-                if (batch_idx + 1) % 50 == 0:
-                    avg_loss = sum(m['total_loss'] for m in train_metrics[-50:]) / min(50, len(train_metrics))
-                    logger.info(f"  Batch {batch_idx + 1}/{len(trainer.train_loader)}: Loss = {avg_loss:.4f}")
+                # Update progress bar with current loss
+                if len(train_metrics) >= 10:  # Update every 10 batches for smoother display
+                    recent_loss = sum(m['total_loss'] for m in train_metrics[-10:]) / 10
+                    train_pbar.set_postfix({
+                        'Loss': f'{recent_loss:.4f}',
+                        'LR': f'{optimizer.param_groups[0]["lr"]:.2e}'
+                    })
             
             # Validation
-            logger.info("🔬 Running validation...")
+            print()  # Add space before validation
             val_results = trainer.evaluate(
                 trainer.val_loader, 
                 compute_detailed_metrics=True,
@@ -701,13 +717,12 @@ def main():
             avg_train_loss = sum(m['total_loss'] for m in train_metrics) / len(train_metrics)
             val_loss = val_results['avg_loss']
             
-            logger.info(f"📊 Epoch {epoch + 1} Results:")
-            logger.info(f"   Train Loss: {avg_train_loss:.4f}")
-            logger.info(f"   Val Loss: {val_loss:.4f}")
+            print(f"\n📊 Epoch {epoch + 1} Results:")
+            print(f"   Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f}")
             
             # Print detailed metrics if available
             if 'metrics_table' in val_results:
-                logger.info("📋 Validation Metrics:")
+                print("\n📋 Validation Metrics:")
                 print(val_results['metrics_table'])
             
             # Log current backbone status
