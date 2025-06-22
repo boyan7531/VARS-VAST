@@ -33,7 +33,7 @@ image_size: 224  # Input image size
 
 
 # Training Settings
-num_workers: 4   # Data loading workers (adjust based on CPU cores)
+num_workers: 8   # Data loading workers (adjust based on CPU cores)
 gradient_accumulation_steps: 1  # For effective larger batch sizes
 max_grad_norm: 1.0  # Gradient clipping
 log_interval: 50    # Steps between logging

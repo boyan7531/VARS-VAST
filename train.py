@@ -309,6 +309,8 @@ def main():
                         help='Use pretrained backbone')
     parser.add_argument('--freeze-backbone', action='store_true',
                         help='Freeze backbone during training')
+    parser.add_argument('--freeze-mode', type=str, default=None, choices=['none', 'freeze_all', 'gradual'],
+                        help='Backbone freeze mode. Overrides --freeze-backbone if set')
     
     # Training arguments
     parser.add_argument('--epochs', type=int, default=50,
@@ -421,7 +423,7 @@ def main():
             'multi_task': args.multi_task,
             'num_classes': args.num_classes,
             'backbone_pretrained': args.pretrained,
-            'backbone_freeze_mode': 'freeze_all' if args.freeze_backbone else 'none',
+            'backbone_freeze_mode': args.freeze_mode if args.freeze_mode is not None else ('freeze_all' if args.freeze_backbone else 'none'),
             'head_dropout': 0.5,
             'head_pooling': 'avg',
             'head_loss_type': 'focal'
