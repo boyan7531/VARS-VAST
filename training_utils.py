@@ -144,7 +144,6 @@ class MultiTaskTrainer:
         
         # Forward pass
         if self.model.multi_task:
-            print(f"DEBUG: Going into multi-task branch (model.multi_task={self.model.multi_task})")
             logits_dict, extras = self.model(videos, return_dict=True)
             
             # Filter logits for curriculum learning
