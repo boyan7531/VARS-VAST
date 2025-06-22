@@ -230,7 +230,15 @@ def validate_epoch(trainer, val_loader, epoch, writer, args):
     if 'task_metrics' in eval_results:
         for task_name, metrics in eval_results['task_metrics'].items():
             for metric_name, value in metrics.items():
-                writer.add_scalar(f'Val/{task_name}/{metric_name}', value, epoch)
+                # Only log scalar values to TensorBoard
+                if isinstance(value, (int, float, np.number)) or (hasattr(value, 'item') and callable(value.item)):
+                    try:
+                        scalar_value = float(value.item()) if hasattr(value, 'item') else float(value)
+                        writer.add_scalar(f'Val/{task_name}/{metric_name}', scalar_value, epoch)
+                    except (ValueError, TypeError):
+                        logger.warning(f"Skipping non-scalar metric {task_name}/{metric_name}: {type(value)}")
+                else:
+                    logger.debug(f"Skipping non-scalar metric {task_name}/{metric_name}: {type(value)}")
     
     # Print metrics table
     if 'metrics_table' in eval_results:
