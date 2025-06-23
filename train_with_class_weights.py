@@ -17,10 +17,11 @@ import sys
 from pathlib import Path
 from typing import Dict, Any, Optional
 from contextlib import nullcontext
+from collections import Counter
 
 import torch
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
@@ -406,6 +407,33 @@ def create_balanced_model(
     return model
 
 
+def create_balanced_sampler(dataset: MVFoulsDataset, task_name: str = 'action_class') -> WeightedRandomSampler:
+    """Create a weighted sampler that balances classes for a specific task."""
+    labels = []
+    for i in range(len(dataset)):
+        sample = dataset[i]
+        if task_name in sample:
+            labels.append(sample[task_name])
+        else:
+            labels.append(0)  # Default class
+    
+    # Count class frequencies
+    class_counts = Counter(labels)
+    num_samples = len(labels)
+    
+    # Compute weights: inverse frequency
+    class_weights = {cls: num_samples / count for cls, count in class_counts.items()}
+    
+    # Create sample weights
+    sample_weights = [class_weights[label] for label in labels]
+    
+    return WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=num_samples,
+        replacement=True
+    )
+
+
 def main():
     """Main training function with class imbalance handling."""
     parser = argparse.ArgumentParser(description='Train MVFouls Model with Class Balance')
@@ -432,6 +460,10 @@ def main():
     parser.add_argument('--force-weights', type=str, choices=['balanced', 'effective', 'focal'], 
                        help='Force specific weighting method')
     parser.add_argument('--focal-gamma', type=float, default=2.0, help='Focal loss gamma parameter')
+    parser.add_argument('--primary-focal-gamma', type=float, default=4.0, 
+                       help='More aggressive focal loss gamma for primary tasks (default: 4.0)')
+    parser.add_argument('--primary-focal-alpha', type=float, default=0.75,
+                       help='Focal loss alpha parameter for primary tasks (default: 0.75)')
     
     # Unfreezing arguments
     parser.add_argument('--disable-gradual-unfreezing', action='store_true', 
@@ -465,6 +497,12 @@ def main():
                         help='LR multiplier for major unfreezing (stage_1, stage_2, stage_3) (default: 3.0)')
     parser.add_argument('--lr-scale-massive', type=float, default=5.0,
                         help='LR multiplier for massive unfreezing (stage_2, stage_3 with >10M params) (default: 5.0)')
+    
+    # Add balanced sampling arguments
+    parser.add_argument('--balanced-sampling', action='store_true',
+                       help='Use balanced sampling to ensure equal class representation')
+    parser.add_argument('--balance-task', type=str, default='action_class',
+                       help='Task to balance sampling for (default: action_class)')
     
     args = parser.parse_args()
     
@@ -567,11 +605,20 @@ def main():
             if args.freeze_mode == 'gradual':
                 logger.info("⚠️ Gradual unfreezing disabled by --disable-gradual-unfreezing")
         
-        # Create dataloaders
+        # Create dataloaders with optional balanced sampling
+        train_sampler = None
+        shuffle = True
+        
+        if args.balanced_sampling:
+            logger.info(f"🎯 Creating balanced sampler for task: {args.balance_task}")
+            train_sampler = create_balanced_sampler(train_dataset, args.balance_task)
+            shuffle = False  # Cannot shuffle when using custom sampler
+        
         train_loader = DataLoader(
             train_dataset,
             batch_size=args.batch_size,
-            shuffle=True,
+            sampler=train_sampler,
+            shuffle=shuffle,
             num_workers=4,
             pin_memory=True,
             drop_last=True
