@@ -8,6 +8,13 @@ This script addresses the severe class imbalance in MVFouls dataset by:
 3. Implementing task-specific loss strategies
 4. Monitoring per-class metrics during training
 5. Automatic gradual backbone unfreezing
+
+Stage 1 Fixes Applied (Learning Rate Sanity):
+- FIXED: Conservative LR scaling prevents aggressive LR increases that cause training collapse
+- FIXED: Separate parameter groups for backbone vs head with independent LR tracking
+- FIXED: Only backbone LR is reduced when unfreezing (head LR remains stable)
+- NEW: Detailed LR logging per epoch shows backbone/head learning rates
+- NEW: Scale factors: patch_embed/stage_0 → ×1.0, stage_1 → ×0.5, stage_2/3 → ×0.25
 """
 
 import argparse
@@ -183,6 +190,7 @@ def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule:
 def apply_adaptive_lr_scaling(optimizer, group_name: str, trainable_params: int, current_stage: int, new_stage: int, args, logger):
     """
     Apply adaptive learning rate scaling based on the unfreezing stage and parameter count.
+    FIXED: Use conservative LR scaling to prevent training instability.
     
     Args:
         optimizer: The optimizer to scale learning rate for
@@ -198,46 +206,55 @@ def apply_adaptive_lr_scaling(optimizer, group_name: str, trainable_params: int,
     original_lr = current_lr
     
     # Determine scaling factor based on unfreezing type
+    # FIXED: Use conservative scaling to prevent LR explosions
     scale_factor = 1.0
     
-    # Define unfreezing categories
+    # Define unfreezing categories with CONSERVATIVE scaling
     if group_name in ['patch_embed']:
-        # Minor unfreezing: small parameter increase
-        scale_factor = args.lr_scale_minor
+        # Keep same LR for initial unfreezing
+        scale_factor = 1.0
         category = "MINOR"
     elif group_name in ['stage_0']:
-        # Minor to moderate unfreezing
-        scale_factor = args.lr_scale_minor
+        # Keep same LR for first stage
+        scale_factor = 1.0
         category = "MINOR"
     elif group_name in ['stage_1']:
-        # Major unfreezing: significant parameter increase
-        scale_factor = args.lr_scale_major
+        # Reduce LR for medium stages (prevents overfitting newly unfrozen layers)
+        scale_factor = 0.5
         category = "MAJOR"
     elif group_name in ['stage_2', 'stage_3']:
-        # Massive unfreezing: huge parameter increase (10M+ parameters)
-        if trainable_params > 10_000_000:  # More than 10M parameters
-            scale_factor = args.lr_scale_massive
-            category = "MASSIVE"
-        else:
-            scale_factor = args.lr_scale_major
-            category = "MAJOR"
+        # Significantly reduce LR for massive unfreezing (prevents instability)
+        scale_factor = 0.25
+        category = "MASSIVE"
     else:
-        # Unknown group, use moderate scaling
-        scale_factor = args.lr_scale_major
+        # Unknown group, use conservative scaling
+        scale_factor = 0.5
         category = "UNKNOWN"
     
-    # Apply scaling
-    new_lr = current_lr * scale_factor
-    
-    # Update all parameter groups
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = new_lr
-    
-    logger.info(f"🔧 Adaptive LR Scaling ({category}):")
-    logger.info(f"   Group: {group_name}")
-    logger.info(f"   Trainable params: {trainable_params:,}")
-    logger.info(f"   LR: {original_lr:.2e} → {new_lr:.2e} (×{scale_factor:.1f})")
-    logger.info(f"   Reason: {category} unfreezing detected")
+    # Apply scaling ONLY if scale_factor < 1.0 (conservative approach)
+    if scale_factor < 1.0:
+        new_lr = current_lr * scale_factor
+        
+        # Update ONLY backbone parameter groups (head LR stays unchanged)
+        updated_groups = []
+        for param_group in optimizer.param_groups:
+            group_name_in_optimizer = param_group.get('name', 'unknown')
+            if 'backbone' in group_name_in_optimizer.lower():
+                param_group['lr'] = new_lr
+                updated_groups.append(group_name_in_optimizer)
+        
+        logger.info(f"🔧 Adaptive LR Scaling ({category}) - CONSERVATIVE:")
+        logger.info(f"   Unfrozen group: {group_name}")
+        logger.info(f"   Trainable params: {trainable_params:,}")
+        logger.info(f"   Backbone LR: {original_lr:.2e} → {new_lr:.2e} (×{scale_factor:.1f})")
+        logger.info(f"   Updated groups: {updated_groups}")
+        logger.info(f"   Reason: {category} unfreezing - reducing backbone LR for stability")
+    else:
+        logger.info(f"🔧 Adaptive LR Scaling ({category}) - NO CHANGE:")
+        logger.info(f"   Unfrozen group: {group_name}")
+        logger.info(f"   Trainable params: {trainable_params:,}")
+        logger.info(f"   LR: {original_lr:.2e} (unchanged)")
+        logger.info(f"   Reason: Conservative scaling - no LR increase")
 
 
 def analyze_dataset_imbalance(dataset: MVFoulsDataset) -> Dict[str, Dict]:
@@ -687,12 +704,26 @@ def main():
             drop_last=False
         )
         
-        # Create optimizer
-        optimizer = optim.AdamW(
-            model.parameters(),
-            lr=args.lr,
-            weight_decay=args.weight_decay
-        )
+        # Create optimizer with separate parameter groups for backbone and head
+        backbone_params = list(model.backbone.parameters())
+        head_params = list(model.head.parameters())
+        
+        param_groups = [
+            {
+                'params': head_params,
+                'lr': args.lr,
+                'weight_decay': args.weight_decay,
+                'name': 'head'
+            },
+            {
+                'params': backbone_params,
+                'lr': args.lr,
+                'weight_decay': args.weight_decay,
+                'name': 'backbone'
+            }
+        ]
+        
+        optimizer = optim.AdamW(param_groups)
         
         # Create scheduler
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -774,6 +805,12 @@ def main():
             print(f"\n{'='*80}")
             logger.info(f"📅 Epoch {epoch + 1}/{args.epochs}")
             print(f"{'='*80}")
+            
+            # Log current learning rates (head/backbone)
+            logger.info(f"📈 Learning Rates:")
+            for i, group in enumerate(optimizer.param_groups):
+                group_name = group.get('name', f'group_{i}')
+                logger.info(f"   {group_name}: {group['lr']:.2e}")
             
             # Apply gradual unfreezing if scheduled
             apply_gradual_unfreezing(model, epoch, unfreeze_schedule, logger, trainer, args, optimizer)
