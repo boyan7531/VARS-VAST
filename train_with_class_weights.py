@@ -439,27 +439,32 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
     Returns:
         WeightedRandomSampler that balances the specified task(s)
     """
-    # Handle both single task and multiple tasks
+    # Handle Subset datasets (e.g., for smoke tests)
+    subset_indices = None
+    if hasattr(dataset, 'dataset') and hasattr(dataset, 'indices'):
+        # It's a torch.utils.data.Subset
+        subset_indices = list(dataset.indices)
+        base_dataset = dataset.dataset  # underlying MVFoulsDataset
+    else:
+        base_dataset = dataset
+    
+    # Normalize task_names to list
     if isinstance(task_names, str):
         task_names = [task_names]
     
-    # Get joint labels for all specified tasks
+    # Build joint_labels list
     joint_labels = []
     
-    # Access annotations directly - this is much faster than dataset[i]
-    for annotation in dataset.annotations:
-        # Create joint key from all task labels
+    # Iterate over relevant indices
+    indices_iter = subset_indices if subset_indices is not None else range(len(base_dataset.annotations))
+    for idx in indices_iter:
+        annotation = base_dataset.annotations[idx]
         joint_key = []
         for task_name in task_names:
-            if task_name in annotation:
-                joint_key.append(annotation[task_name])
-            else:
-                joint_key.append(0)  # Default class
-        
-        # Convert to tuple for hashing
+            joint_key.append(annotation.get(task_name, 0))
         joint_labels.append(tuple(joint_key))
     
-    # Count joint class frequencies
+    # Count frequencies etc.
     class_counts = Counter(joint_labels)
     num_samples = len(joint_labels)
     
@@ -573,6 +578,10 @@ def main():
     parser.add_argument('--context-task-weight', type=float, default=0.5,
                         help='Weight for contextual tasks (remaining tasks) (default: 0.5)')
     
+    # Add train-fraction argument
+    parser.add_argument('--train-fraction', type=float, default=1.0,
+                        help='Fraction of training data to use (e.g., 0.2 for 20% smoke test)')
+    
     args = parser.parse_args()
     
     # Setup logging
@@ -608,6 +617,17 @@ def main():
             load_annotations=True,
             num_frames=32
         )
+        
+        # Apply fractional subset for smoke tests
+        if 0 < args.train_fraction < 1.0:
+            import random
+            subset_size = int(len(train_dataset) * args.train_fraction)
+            indices = list(range(len(train_dataset)))
+            random.shuffle(indices)
+            subset_indices = indices[:subset_size]
+            from torch.utils.data import Subset
+            train_dataset = Subset(train_dataset, subset_indices)
+            logger.info(f"🔍 Using subset of training data: {subset_size}/{len(indices)} samples ({args.train_fraction*100:.1f}%) for smoke test")
         
         val_dataset = MVFoulsDataset(
             root_dir=root_dir,
