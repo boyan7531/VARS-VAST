@@ -29,7 +29,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union, List
 from contextlib import nullcontext
 from collections import Counter
 
@@ -429,27 +429,61 @@ def create_balanced_model(
     return model
 
 
-def create_balanced_sampler(dataset: MVFoulsDataset, task_name: str = 'action_class') -> WeightedRandomSampler:
-    """Create a weighted sampler that balances classes for a specific task."""
-    # Get labels directly from dataset annotations without loading videos
-    labels = []
+def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List[str]] = 'action_class') -> WeightedRandomSampler:
+    """Create a weighted sampler that balances classes for one or multiple tasks.
+    
+    Args:
+        dataset: The MVFoulsDataset to sample from
+        task_names: Either a single task name (str) or list of task names to balance jointly
+        
+    Returns:
+        WeightedRandomSampler that balances the specified task(s)
+    """
+    # Handle both single task and multiple tasks
+    if isinstance(task_names, str):
+        task_names = [task_names]
+    
+    # Get joint labels for all specified tasks
+    joint_labels = []
     
     # Access annotations directly - this is much faster than dataset[i]
     for annotation in dataset.annotations:
-        if task_name in annotation:
-            labels.append(annotation[task_name])
-        else:
-            labels.append(0)  # Default class
+        # Create joint key from all task labels
+        joint_key = []
+        for task_name in task_names:
+            if task_name in annotation:
+                joint_key.append(annotation[task_name])
+            else:
+                joint_key.append(0)  # Default class
+        
+        # Convert to tuple for hashing
+        joint_labels.append(tuple(joint_key))
     
-    # Count class frequencies
-    class_counts = Counter(labels)
-    num_samples = len(labels)
+    # Count joint class frequencies
+    class_counts = Counter(joint_labels)
+    num_samples = len(joint_labels)
     
-    # Compute weights: inverse frequency
+    # Log joint class distribution for multi-task sampling
+    if len(task_names) > 1:
+        print(f"\n📊 Joint class distribution for tasks {task_names}:")
+        sorted_classes = sorted(class_counts.items(), key=lambda x: x[1], reverse=True)
+        for joint_class, count in sorted_classes[:10]:  # Show top 10
+            percentage = (count / num_samples) * 100
+            print(f"   {joint_class}: {count} samples ({percentage:.1f}%)")
+        if len(sorted_classes) > 10:
+            print(f"   ... and {len(sorted_classes) - 10} more joint classes")
+        
+        # Calculate imbalance ratio
+        max_count = max(class_counts.values())
+        min_count = min(class_counts.values())
+        imbalance_ratio = max_count / min_count
+        print(f"   📈 Joint class imbalance ratio: {imbalance_ratio:.1f}:1")
+    
+    # Compute weights: inverse frequency for joint classes
     class_weights = {cls: num_samples / count for cls, count in class_counts.items()}
     
     # Create sample weights
-    sample_weights = [class_weights[label] for label in labels]
+    sample_weights = [class_weights[label] for label in joint_labels]
     
     return WeightedRandomSampler(
         weights=sample_weights,
@@ -522,8 +556,12 @@ def main():
     # Add balanced sampling arguments
     parser.add_argument('--balanced-sampling', action='store_true',
                        help='Use balanced sampling to ensure equal class representation')
-    parser.add_argument('--balance-task', type=str, default='action_class',
-                       help='Task to balance sampling for (default: action_class)')
+    parser.add_argument('--balance-tasks', nargs='+', default=['action_class'],
+                       help='Task(s) to balance sampling for. For joint balancing, specify multiple tasks (default: action_class)')
+    parser.add_argument('--balance-task', type=str, default=None,
+                       help='Single task to balance sampling for (deprecated, use --balance-tasks)')
+    parser.add_argument('--joint-severity-sampling', action='store_true',
+                       help='Convenience flag to enable joint sampling for action_class and severity (equivalent to --balance-tasks action_class severity)')
     
     # Add new sophisticated weighting strategy
     parser.add_argument('--use-smart-weighting', action='store_true',
@@ -672,8 +710,24 @@ def main():
         shuffle = True
         
         if args.balanced_sampling:
-            logger.info(f"🎯 Creating balanced sampler for task: {args.balance_task}")
-            train_sampler = create_balanced_sampler(train_dataset, args.balance_task)
+            # Handle convenience flag for joint severity sampling
+            if args.joint_severity_sampling:
+                balance_tasks = ['action_class', 'severity']
+                logger.info("🎯 Using convenience flag --joint-severity-sampling")
+            else:
+                # Handle backward compatibility: use --balance-task if specified, otherwise use --balance-tasks
+                balance_tasks = args.balance_tasks
+                if args.balance_task is not None:
+                    balance_tasks = [args.balance_task]
+                    logger.info("⚠️  Using deprecated --balance-task, consider switching to --balance-tasks")
+            
+            if len(balance_tasks) == 1:
+                logger.info(f"🎯 Creating balanced sampler for single task: {balance_tasks[0]}")
+            else:
+                logger.info(f"🎯 Creating joint balanced sampler for tasks: {balance_tasks}")
+                logger.info("   📊 Joint balancing ensures both tasks are balanced together")
+            
+            train_sampler = create_balanced_sampler(train_dataset, balance_tasks)
             shuffle = False  # Cannot shuffle when using custom sampler
             logger.info("✅ Option A: WeightedRandomSampler enabled")
         else:
