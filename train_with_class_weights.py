@@ -413,11 +413,13 @@ def create_balanced_model(
 
 def create_balanced_sampler(dataset: MVFoulsDataset, task_name: str = 'action_class') -> WeightedRandomSampler:
     """Create a weighted sampler that balances classes for a specific task."""
+    # Get labels directly from dataset annotations without loading videos
     labels = []
-    for i in range(len(dataset)):
-        sample = dataset[i]
-        if task_name in sample:
-            labels.append(sample[task_name])
+    
+    # Access annotations directly - this is much faster than dataset[i]
+    for annotation in dataset.annotations:
+        if task_name in annotation:
+            labels.append(annotation[task_name])
         else:
             labels.append(0)  # Default class
     
