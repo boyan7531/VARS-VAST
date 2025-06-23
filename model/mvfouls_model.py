@@ -177,7 +177,8 @@ class MVFoulsModel(nn.Module):
                 task_names=task_names,
                 num_classes_per_task=num_classes_per_task,
                 loss_types_per_task=loss_types_per_task,
-                task_weights=class_weights if isinstance(class_weights, dict) else None
+                task_weights=class_weights if isinstance(class_weights, dict) else None,
+                task_loss_weights=task_loss_weights
             )
         else:
             # Single-task mode
@@ -191,7 +192,8 @@ class MVFoulsModel(nn.Module):
                 label_smoothing=head_label_smoothing,
                 enable_localizer=head_enable_localizer,
                 gradient_checkpointing=head_gradient_checkpointing,
-                class_weights=class_weights if isinstance(class_weights, torch.Tensor) else None
+                class_weights=class_weights if isinstance(class_weights, torch.Tensor) else None,
+                task_loss_weights=task_loss_weights
             )
         
         # Initialize training state

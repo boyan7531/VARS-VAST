@@ -125,7 +125,8 @@ class MVFoulsHead(nn.Module):
         task_names: Optional[List[str]] = None,
         num_classes_per_task: Optional[List[int]] = None,
         loss_types_per_task: Optional[List[str]] = None,
-        task_weights: Optional[Dict[str, torch.Tensor]] = None
+        task_weights: Optional[Dict[str, torch.Tensor]] = None,
+        task_loss_weights: Optional[Dict[str, float]] = None
     ):
         super().__init__()
         
@@ -156,8 +157,11 @@ class MVFoulsHead(nn.Module):
             else:
                 self.loss_types_per_task = loss_types_per_task
                 
-            # Set up per-task weights
+            # Set up per-task weights (class weights)
             self.task_weights = task_weights or {}
+            
+            # Store task loss weights (scalar weights for loss combination)
+            self.task_weights_scalar = task_loss_weights or {}
             
             # For backward compatibility
             self.num_classes = sum(self.num_classes_per_task)
@@ -168,6 +172,7 @@ class MVFoulsHead(nn.Module):
             self.num_classes_per_task = [num_classes]
             self.loss_types_per_task = [loss_type]
             self.task_weights = {}
+            self.task_weights_scalar = task_loss_weights or {}
             self.num_classes = num_classes
             self.loss_type = loss_type
         
@@ -466,12 +471,12 @@ class MVFoulsHead(nn.Module):
         **kwargs
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute multi-task loss.
+        Compute multi-task loss with task weights flowing from CLI.
         
         Args:
             logits_dict: Dict mapping task names to logits tensors
             targets_dict: Dict mapping task names to target tensors  
-            task_loss_weights: Optional weights for each task loss
+            task_loss_weights: Optional weights for each task loss (overrides stored weights)
             focal_gamma: Gamma parameter for focal loss
             
         Returns:
@@ -479,7 +484,8 @@ class MVFoulsHead(nn.Module):
         """
         loss_dict = {}
         total_loss = 0.0
-        task_weights = task_loss_weights or {}
+        # Use provided weights, fallback to stored weights, then empty dict
+        task_weights = task_loss_weights or self.task_weights_scalar or {}
         
         for task_name in self.task_names:
             if task_name not in logits_dict or task_name not in targets_dict:
