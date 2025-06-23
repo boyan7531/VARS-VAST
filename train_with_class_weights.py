@@ -15,6 +15,13 @@ Stage 1 Fixes Applied (Learning Rate Sanity):
 - FIXED: Only backbone LR is reduced when unfreezing (head LR remains stable)
 - NEW: Detailed LR logging per epoch shows backbone/head learning rates
 - NEW: Scale factors: patch_embed/stage_0 → ×1.0, stage_1 → ×0.5, stage_2/3 → ×0.25
+
+Stage 2 Fixes Applied (Option A: Simplified Loss Strategy):
+- IMPLEMENTED: WeightedRandomSampler + CrossEntropy approach for stability
+- REMOVED: Focal loss, effective number weights, complex loss configurations
+- SIMPLIFIED: Basic inverse frequency class weights (capped at 10x max)
+- ELIMINATED: Triple over-compensation that caused training instability
+- STREAMLINED: Single loss type (CrossEntropy) across all tasks for consistency
 """
 
 import argparse
@@ -258,10 +265,13 @@ def apply_adaptive_lr_scaling(optimizer, group_name: str, trainable_params: int,
 
 
 def analyze_dataset_imbalance(dataset: MVFoulsDataset) -> Dict[str, Dict]:
-    """Analyze class imbalance in the dataset and recommend solutions."""
+    """
+    Analyze class imbalance in the dataset for Option A approach.
+    SIMPLIFIED: Just provides class counts and imbalance ratios.
+    """
     logger = logging.getLogger(__name__)
     
-    logger.info("🔍 Analyzing dataset class imbalance...")
+    logger.info("🔍 Analyzing dataset class imbalance (Option A: Simple Analysis)...")
     
     # Get dataset statistics
     stats = dataset.get_task_statistics()
@@ -269,7 +279,7 @@ def analyze_dataset_imbalance(dataset: MVFoulsDataset) -> Dict[str, Dict]:
     # Get task metadata for expected number of classes
     metadata = get_task_metadata()
     
-    recommendations = {}
+    analysis_results = {}
     
     for task_name, task_stats in stats.items():
         class_counts = task_stats['class_counts']
@@ -292,57 +302,27 @@ def analyze_dataset_imbalance(dataset: MVFoulsDataset) -> Dict[str, Dict]:
         min_count = min([c for c in class_counts if c > 0]) if any(c > 0 for c in class_counts) else 1
         imbalance_ratio = max_count / min_count if min_count > 0 else float('inf')
         
-        # Create dummy labels for weight calculation, ensuring all classes are represented
-        dummy_labels = []
-        for class_idx, count in enumerate(class_counts):
-            if count > 0:
-                dummy_labels.extend([class_idx] * count)
-            else:
-                # Add at least one dummy sample for missing classes to ensure proper weight calculation
-                dummy_labels.append(class_idx)
+        # Simple severity classification
+        severity = 'SEVERE' if imbalance_ratio > 20 else 'MODERATE' if imbalance_ratio > 5 else 'MILD'
         
-        config = get_recommended_loss_config(dummy_labels, num_classes=expected_num_classes, severity_threshold=20.0)
-        
-        # Ensure class weights have the correct length
-        if config['class_weights'] is not None:
-            weights = config['class_weights']
-            if len(weights) != expected_num_classes:
-                # Fix weight tensor to have correct number of classes
-                if len(weights) < expected_num_classes:
-                    # Pad with mean weight for missing classes
-                    mean_weight = float(torch.mean(weights))
-                    padding = [mean_weight] * (expected_num_classes - len(weights))
-                    weights = torch.cat([weights, torch.tensor(padding, dtype=torch.float32)])
-                else:
-                    # Truncate if too long (shouldn't happen)
-                    weights = weights[:expected_num_classes]
-            
-            # Scale down weights to be less aggressive (prevent overcompensation)
-            # Use square root to reduce the strength while maintaining relative differences
-            weights = torch.sqrt(weights)
-            # Normalize to have mean of 1.0
-            weights = weights / weights.mean()
-            config['class_weights'] = weights
-        
-        recommendations[task_name] = {
+        analysis_results[task_name] = {
             'imbalance_ratio': imbalance_ratio,
             'total_samples': total_samples,
             'class_counts': class_counts,
             'class_names': task_stats['class_names'],
-            'recommended_config': config,
-            'severity': 'SEVERE' if imbalance_ratio > 10 else 'MODERATE' if imbalance_ratio > 3 else 'MILD'
+            'severity': severity
         }
         
         logger.info(f"📊 {task_name}:")
-        logger.info(f"   Imbalance ratio: {imbalance_ratio:.1f}:1 ({recommendations[task_name]['severity']})")
-        logger.info(f"   Recommendation: {config['recommendation']}")
+        logger.info(f"   Imbalance ratio: {imbalance_ratio:.1f}:1 ({severity})")
+        logger.info(f"   Strategy: WeightedRandomSampler + CrossEntropy + Class Weights")
         
         # Show class distribution
         for class_idx, (class_name, count) in enumerate(zip(task_stats['class_names'], class_counts)):
             percentage = (count / total_samples) * 100 if total_samples > 0 else 0
             logger.info(f"     {class_name}: {count} ({percentage:.1f}%)")
     
-    return recommendations
+    return analysis_results
 
 
 def create_balanced_model(
@@ -350,10 +330,14 @@ def create_balanced_model(
     imbalance_analysis: Optional[Dict] = None,
     primary_task_weights: Optional[Dict[str, float]] = None,
     backbone_checkpointing: bool = True,
-    task_focal_gamma_map: Optional[Dict[str, float]] = None,
+    use_class_weights: bool = True,
+    class_weight_cap: float = 10.0,
     **model_kwargs
 ) -> MVFoulsModel:
-    """Create a model with proper class imbalance handling."""
+    """
+    Create a model with Option A: WeightedRandomSampler + Cross-Entropy.
+    SIMPLIFIED: Uses only CrossEntropy loss with optional simple class weights.
+    """
     logger = logging.getLogger(__name__)
     
     if multi_task:
@@ -361,55 +345,72 @@ def create_balanced_model(
         metadata = get_task_metadata()
         task_names = metadata['task_names']
         
-        # Prepare task-specific configurations
+        # Prepare simplified task-specific configurations
         task_weights = {}
         loss_types_per_task = []
         
         for task_name in task_names:
-            if imbalance_analysis and task_name in imbalance_analysis:
+            # OPTION A: Always use Cross-Entropy loss
+            loss_types_per_task.append('ce')
+            
+            # Optional: Add simple inverse frequency class weights
+            if use_class_weights and imbalance_analysis and task_name in imbalance_analysis:
                 analysis = imbalance_analysis[task_name]
-                config = analysis['recommended_config']
+                class_counts = analysis['class_counts']
                 
-                # Use recommended class weights
-                if config['class_weights'] is not None:
-                    # Ensure weights are tensors and will be moved to device later
-                    weights = config['class_weights']
-                    if not isinstance(weights, torch.Tensor):
-                        weights = torch.tensor(weights, dtype=torch.float32)
+                # Compute simple inverse frequency weights
+                total_samples = sum(class_counts)
+                if total_samples > 0:
+                    weights = []
+                    for count in class_counts:
+                        if count > 0:
+                            # Inverse frequency, but capped to prevent extreme weights
+                            weight = min(total_samples / count, class_weight_cap)
+                        else:
+                            weight = 1.0  # Default weight for missing classes
+                        weights.append(weight)
+                    
+                    # Normalize weights to have mean of 1.0
+                    weights = torch.tensor(weights, dtype=torch.float32)
+                    weights = weights / weights.mean()
                     task_weights[task_name] = weights
-                
-                # Use recommended loss type
-                loss_types_per_task.append(config['loss_type'])
-                
-                logger.info(f"🎯 {task_name}: {config['loss_type']} loss, "
-                          f"weights: {config['class_weights'] is not None}")
+                    
+                    logger.info(f"🎯 {task_name}: CrossEntropy loss, "
+                              f"class weights: {weights.tolist()}")
+                else:
+                    logger.info(f"🎯 {task_name}: CrossEntropy loss, no weights")
             else:
-                # Default to focal loss for unknown tasks
-                loss_types_per_task.append('focal')
+                logger.info(f"🎯 {task_name}: CrossEntropy loss, no weights")
         
-        # Create multi-task model with balanced configuration
+        # Create multi-task model with simplified configuration
         model = build_multi_task_model(
             backbone_pretrained=True,
             backbone_freeze_mode='gradual',
             loss_types_per_task=loss_types_per_task,
             class_weights=task_weights,
-            backbone_checkpointing=backbone_checkpointing,
-            task_focal_gamma_map=task_focal_gamma_map
+            backbone_checkpointing=backbone_checkpointing
         )
         
     else:
-        # Single-task model with class weights
+        # Single-task model with simple class weights
         class_weights = None
-        if imbalance_analysis and 'offence' in imbalance_analysis:
-            config = imbalance_analysis['offence']['recommended_config']
-            if config['class_weights'] is not None:
-                weights = config['class_weights']
-                if not isinstance(weights, torch.Tensor):
-                    weights = torch.tensor(weights, dtype=torch.float32)
+        if use_class_weights and imbalance_analysis and 'offence' in imbalance_analysis:
+            analysis = imbalance_analysis['offence']
+            class_counts = analysis['class_counts']
+            total_samples = sum(class_counts)
+            
+            if total_samples > 0:
+                weights = []
+                for count in class_counts:
+                    if count > 0:
+                        weight = min(total_samples / count, class_weight_cap)
+                    else:
+                        weight = 1.0
+                    weights.append(weight)
+                
+                weights = torch.tensor(weights, dtype=torch.float32)
+                weights = weights / weights.mean()
                 class_weights = weights
-            loss_type = config['loss_type']
-        else:
-            loss_type = 'focal'
         
         # Filter out conflicting kwargs
         filtered_kwargs = {k: v for k, v in model_kwargs.items() 
@@ -419,7 +420,7 @@ def create_balanced_model(
             num_classes=2,
             backbone_pretrained=True,
             backbone_freeze_mode='gradual',
-            head_loss_type=loss_type,
+            head_loss_type='ce',  # Always use CrossEntropy
             class_weights=class_weights,
             backbone_checkpointing=backbone_checkpointing,
             **filtered_kwargs
@@ -478,15 +479,12 @@ def main():
     parser.add_argument('--weight-decay', type=float, default=1e-4, help='Weight decay')
     parser.add_argument('--freeze-mode', type=str, default='gradual', help='Backbone freeze mode')
     
-    # Balance-specific arguments
+    # Balance-specific arguments (Option A: WeightedRandomSampler + CrossEntropy)
     parser.add_argument('--analyze-only', action='store_true', help='Only analyze imbalance, dont train')
-    parser.add_argument('--force-weights', type=str, choices=['balanced', 'effective', 'focal'], 
-                       help='Force specific weighting method')
-    parser.add_argument('--focal-gamma', type=float, default=2.0, help='Focal loss gamma parameter')
-    parser.add_argument('--primary-focal-gamma', type=float, default=4.0, 
-                       help='More aggressive focal loss gamma for primary tasks (default: 4.0)')
-    parser.add_argument('--primary-focal-alpha', type=float, default=0.75,
-                       help='Focal loss alpha parameter for primary tasks (default: 0.75)')
+    parser.add_argument('--disable-class-weights', action='store_true', 
+                       help='Disable simple inverse frequency class weights')
+    parser.add_argument('--class-weight-cap', type=float, default=10.0,
+                       help='Maximum class weight multiplier to prevent extreme weights (default: 10.0)')
     
     # Unfreezing arguments
     parser.add_argument('--disable-gradual-unfreezing', action='store_true', 
@@ -594,10 +592,8 @@ def main():
         # Create balanced model
         logger.info("🏗️ Creating balanced model...")
         
-        # Create task weighting strategy
+        # Create task weighting strategy (simplified for Option A)
         primary_task_weights = {}
-        # Build per-task focal gamma map (default 2.0, override for primary tasks)
-        gamma_map = {}
         if args.multi_task:
             # Get all task names from metadata
             from utils import get_task_metadata
@@ -629,13 +625,6 @@ def main():
                 logger.info(f"   Core tasks ({args.core_task_weight}x): {core_tasks}")
                 logger.info(f"   Support tasks ({args.support_task_weight}x): {support_tasks}")
                 logger.info(f"   Context tasks ({args.context_task_weight}x): {context_tasks}")
-                
-                # Set focal gamma per task: use primary_focal_gamma for core tasks, else default 2.0
-                for task_name in all_tasks:
-                    if task_name in ['action_class', 'severity']:
-                        gamma_map[task_name] = args.primary_focal_gamma
-                    else:
-                        gamma_map[task_name] = 2.0
             
             else:
                 # Simple primary/auxiliary weighting
@@ -650,13 +639,15 @@ def main():
                         primary_task_weights[task_name] = args.auxiliary_task_weight
             
             logger.info(f"   Task weights: {primary_task_weights}")
+            logger.info("🎯 Using Option A: WeightedRandomSampler + CrossEntropy")
         
         model = create_balanced_model(
             multi_task=args.multi_task,
             imbalance_analysis=imbalance_analysis,
             primary_task_weights=primary_task_weights,
             backbone_checkpointing=True,  # Enable gradient checkpointing
-            task_focal_gamma_map=gamma_map
+            use_class_weights=not args.disable_class_weights,  # Use simple inverse frequency class weights
+            class_weight_cap=args.class_weight_cap
         )
         
         # Create unfreezing schedule
@@ -676,7 +667,7 @@ def main():
             if args.freeze_mode == 'gradual':
                 logger.info("⚠️ Gradual unfreezing disabled by --disable-gradual-unfreezing")
         
-        # Create dataloaders with optional balanced sampling
+        # Create dataloaders with balanced sampling (Option A requires this)
         train_sampler = None
         shuffle = True
         
@@ -684,6 +675,9 @@ def main():
             logger.info(f"🎯 Creating balanced sampler for task: {args.balance_task}")
             train_sampler = create_balanced_sampler(train_dataset, args.balance_task)
             shuffle = False  # Cannot shuffle when using custom sampler
+            logger.info("✅ Option A: WeightedRandomSampler enabled")
+        else:
+            logger.info("⚠️  Option A: WeightedRandomSampler disabled (use --balanced-sampling to enable)")
         
         train_loader = DataLoader(
             train_dataset,
@@ -775,7 +769,7 @@ def main():
         writer = SummaryWriter(output_dir / 'tensorboard')
         
         # Training loop
-        logger.info("🎯 Starting training with balanced losses...")
+        logger.info("🎯 Starting training with Option A: WeightedRandomSampler + CrossEntropy...")
         
         # Log primary task weighting if enabled
         if args.multi_task and primary_task_weights:
