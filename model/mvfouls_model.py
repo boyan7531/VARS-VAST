@@ -84,6 +84,7 @@ class MVFoulsModel(nn.Module):
         # Training configuration
         class_weights: Optional[Union[torch.Tensor, Dict[str, torch.Tensor]]] = None,
         task_loss_weights: Optional[Dict[str, float]] = None,
+        task_focal_gamma_map: Optional[Dict[str, float]] = None,
         
         # Model configuration
         model_name: str = "MVFoulsModel",
@@ -113,6 +114,7 @@ class MVFoulsModel(nn.Module):
             
             class_weights: Class weights for loss computation
             task_loss_weights: Weights for combining task losses
+            task_focal_gamma_map: Focal gamma map for multi-task loss computation
             
             model_name: Name identifier for the model
             model_version: Version identifier for the model
@@ -138,12 +140,14 @@ class MVFoulsModel(nn.Module):
             'loss_types_per_task': loss_types_per_task,
             'class_weights': class_weights,
             'task_loss_weights': task_loss_weights,
+            'task_focal_gamma_map': task_focal_gamma_map,
             'model_name': model_name,
             'model_version': model_version,
         }
         
         self.multi_task = multi_task
         self.task_loss_weights = task_loss_weights or {}
+        self.task_focal_gamma_map = task_focal_gamma_map
         
         # Build backbone
         print("Building backbone...")
@@ -275,7 +279,8 @@ class MVFoulsModel(nn.Module):
         if self.multi_task and isinstance(logits, dict) and isinstance(targets, dict):
             # Multi-task loss computation
             loss_dict = self.head.compute_multi_task_loss(
-                logits, targets, self.task_loss_weights
+                logits, targets, self.task_loss_weights,
+                focal_gamma=self.task_focal_gamma_map if self.task_focal_gamma_map is not None else 2.0
             )
             
             if return_dict:

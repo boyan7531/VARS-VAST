@@ -332,6 +332,8 @@ def create_balanced_model(
     multi_task: bool = True,
     imbalance_analysis: Optional[Dict] = None,
     primary_task_weights: Optional[Dict[str, float]] = None,
+    backbone_checkpointing: bool = True,
+    task_focal_gamma_map: Optional[Dict[str, float]] = None,
     **model_kwargs
 ) -> MVFoulsModel:
     """Create a model with proper class imbalance handling."""
@@ -374,7 +376,8 @@ def create_balanced_model(
             backbone_freeze_mode='gradual',
             loss_types_per_task=loss_types_per_task,
             class_weights=task_weights,
-            **model_kwargs
+            backbone_checkpointing=backbone_checkpointing,
+            task_focal_gamma_map=task_focal_gamma_map
         )
         
     else:
@@ -401,6 +404,7 @@ def create_balanced_model(
             backbone_freeze_mode='gradual',
             head_loss_type=loss_type,
             class_weights=class_weights,
+            backbone_checkpointing=backbone_checkpointing,
             **filtered_kwargs
         )
     
@@ -504,6 +508,16 @@ def main():
     parser.add_argument('--balance-task', type=str, default='action_class',
                        help='Task to balance sampling for (default: action_class)')
     
+    # Add new sophisticated weighting strategy
+    parser.add_argument('--use-smart-weighting', action='store_true',
+                        help='Use sophisticated task weighting based on semantic relevance')
+    parser.add_argument('--core-task-weight', type=float, default=20.0,
+                        help='Weight for core tasks (action_class, severity) (default: 20.0)')
+    parser.add_argument('--support-task-weight', type=float, default=2.0,
+                        help='Weight for supporting tasks (contact, bodypart, offence) (default: 2.0)')
+    parser.add_argument('--context-task-weight', type=float, default=0.5,
+                        help='Weight for contextual tasks (remaining tasks) (default: 0.5)')
+    
     args = parser.parse_args()
     
     # Setup logging
@@ -561,23 +575,60 @@ def main():
         # Create balanced model
         logger.info("🏗️ Creating balanced model...")
         
-        # Create primary task weighting
+        # Create task weighting strategy
         primary_task_weights = {}
+        # Build per-task focal gamma map (default 2.0, override for primary tasks)
+        gamma_map = {}
         if args.multi_task:
-            logger.info(f"🎯 Setting up primary task weighting:")
-            logger.info(f"   Primary tasks: {args.primary_tasks} (weight: {args.primary_task_weight}x)")
-            logger.info(f"   Auxiliary tasks: all others (weight: {args.auxiliary_task_weight}x)")
-            
             # Get all task names from metadata
             from utils import get_task_metadata
             metadata = get_task_metadata()
             all_tasks = metadata['task_names']
             
-            for task_name in all_tasks:
-                if task_name in args.primary_tasks:
-                    primary_task_weights[task_name] = args.primary_task_weight
-                else:
-                    primary_task_weights[task_name] = args.auxiliary_task_weight
+            if args.use_smart_weighting:
+                # Smart weighting based on semantic relevance
+                # Core tasks (main objectives)
+                core_tasks = ['action_class', 'severity']
+                
+                # Support tasks (directly relevant to core tasks)
+                support_tasks = ['contact', 'bodypart', 'offence', 'upper_body_part']
+                
+                # Context tasks (provide additional context)
+                context_tasks = ['multiple_fouls', 'try_to_play', 'touch_ball', 'handball', 'handball_offence']
+                
+                for task_name in all_tasks:
+                    if task_name in core_tasks:
+                        primary_task_weights[task_name] = args.core_task_weight
+                    elif task_name in support_tasks:
+                        primary_task_weights[task_name] = args.support_task_weight
+                    elif task_name in context_tasks:
+                        primary_task_weights[task_name] = args.context_task_weight
+                    else:
+                        primary_task_weights[task_name] = args.context_task_weight
+                
+                logger.info("🎯 Smart task weighting enabled:")
+                logger.info(f"   Core tasks ({args.core_task_weight}x): {core_tasks}")
+                logger.info(f"   Support tasks ({args.support_task_weight}x): {support_tasks}")
+                logger.info(f"   Context tasks ({args.context_task_weight}x): {context_tasks}")
+                
+                # Set focal gamma per task: use primary_focal_gamma for core tasks, else default 2.0
+                for task_name in all_tasks:
+                    if task_name in ['action_class', 'severity']:
+                        gamma_map[task_name] = args.primary_focal_gamma
+                    else:
+                        gamma_map[task_name] = 2.0
+            
+            else:
+                # Simple primary/auxiliary weighting
+                logger.info(f"🎯 Setting up primary task weighting:")
+                logger.info(f"   Primary tasks: {args.primary_tasks} (weight: {args.primary_task_weight}x)")
+                logger.info(f"   Auxiliary tasks: all others (weight: {args.auxiliary_task_weight}x)")
+                
+                for task_name in all_tasks:
+                    if task_name in args.primary_tasks:
+                        primary_task_weights[task_name] = args.primary_task_weight
+                    else:
+                        primary_task_weights[task_name] = args.auxiliary_task_weight
             
             logger.info(f"   Task weights: {primary_task_weights}")
         
@@ -585,7 +636,8 @@ def main():
             multi_task=args.multi_task,
             imbalance_analysis=imbalance_analysis,
             primary_task_weights=primary_task_weights,
-            backbone_checkpointing=True  # Enable gradient checkpointing
+            backbone_checkpointing=True,  # Enable gradient checkpointing
+            task_focal_gamma_map=gamma_map
         )
         
         # Create unfreezing schedule

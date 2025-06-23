@@ -462,7 +462,7 @@ class MVFoulsHead(nn.Module):
         logits_dict: Dict[str, torch.Tensor],
         targets_dict: Dict[str, torch.Tensor],
         task_loss_weights: Optional[Dict[str, float]] = None,
-        focal_gamma: float = 2.0,
+        focal_gamma: Union[float, Dict[str, float]] = 2.0,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
         """
@@ -495,7 +495,12 @@ class MVFoulsHead(nn.Module):
             
             # Compute task loss
             if loss_type == 'focal':
-                task_loss = self._focal_loss(logits, targets, focal_gamma, class_weights)
+                # Support per-task focal gamma: if focal_gamma is a dict, fall back to default 2.0 if task not specified
+                if isinstance(focal_gamma, dict):
+                    gamma_val = focal_gamma.get(task_name, 2.0)
+                else:
+                    gamma_val = focal_gamma
+                task_loss = self._focal_loss(logits, targets, gamma_val, class_weights)
             elif loss_type == 'ce':
                 if class_weights is not None:
                     task_loss = F.cross_entropy(logits, targets, weight=class_weights, 
