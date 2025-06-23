@@ -497,12 +497,12 @@ def main():
     # Adaptive learning rate arguments
     parser.add_argument('--adaptive-lr', action='store_true',
                         help='Enable adaptive learning rate scaling during unfreezing')
-    parser.add_argument('--lr-scale-minor', type=float, default=1.5,
-                        help='LR multiplier for minor unfreezing (patch_embed, stage_0) (default: 1.5)')
-    parser.add_argument('--lr-scale-major', type=float, default=3.0,
-                        help='LR multiplier for major unfreezing (stage_1, stage_2, stage_3) (default: 3.0)')
-    parser.add_argument('--lr-scale-massive', type=float, default=5.0,
-                        help='LR multiplier for massive unfreezing (stage_2, stage_3 with >10M params) (default: 5.0)')
+    parser.add_argument('--lr-scale-minor', type=float, default=1.2,
+                        help='LR multiplier for minor unfreezing (patch_embed, stage_0) (default: 1.2)')
+    parser.add_argument('--lr-scale-major', type=float, default=1.5,
+                        help='LR multiplier for major unfreezing (stage_1, stage_2, stage_3) (default: 1.5)')
+    parser.add_argument('--lr-scale-massive', type=float, default=2.0,
+                        help='LR multiplier for massive unfreezing (stage_2, stage_3 with >10M params) (default: 2.0)')
     
     # Add balanced sampling arguments
     parser.add_argument('--balanced-sampling', action='store_true',

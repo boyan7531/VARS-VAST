@@ -161,19 +161,9 @@ class MultiTaskTrainer:
             # Compute loss
             loss_dict = self.model.compute_loss(filtered_logits, filtered_targets, return_dict=True)
             
-            # Apply primary task weighting if specified
-            if self.primary_task_weights:
-                # Recompute total loss with primary task weights
-                weighted_total_loss = 0.0
-                for task_name, task_loss in loss_dict.items():
-                    if task_name != 'total_loss' and isinstance(task_loss, torch.Tensor):
-                        weight = self.primary_task_weights.get(task_name, 1.0)
-                        weighted_total_loss += weight * task_loss
-                
-                total_loss = weighted_total_loss
-                loss_dict['total_loss'] = total_loss  # Update the loss dict
-            else:
-                total_loss = loss_dict['total_loss']
+            # Task weights are already applied in model.compute_loss(), 
+            # so we don't double-apply them here
+            total_loss = loss_dict['total_loss']
         else:
             logits, extras = self.model(videos, return_dict=False)
             targets = targets.to(self.device)
@@ -507,6 +497,16 @@ class MultiTaskTrainer:
             },
             'best_metrics': self.best_metrics
         }
+
+    def adjust_lr_on_unfreeze(self, scale_factor: float = 1.5):
+        """Adjust learning rate when unfreezing backbone layers."""
+        if self.optimizer:
+            for param_group in self.optimizer.param_groups:
+                old_lr = param_group['lr']
+                param_group['lr'] = old_lr * scale_factor
+                logger.info(f"📈 Adaptive LR Scaling: {old_lr:.1e} → {param_group['lr']:.1e} (×{scale_factor})")
+        else:
+            logger.warning("No optimizer found for LR adjustment")
 
 
 def create_mvfouls_trainer(
