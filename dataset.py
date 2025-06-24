@@ -20,6 +20,9 @@ except ImportError:
 
 try:
     import av
+    # Suppress verbose ffmpeg logging from PyAV
+    import av.logging
+    av.logging.set_level(av.logging.ERROR)
     PYAV_AVAILABLE = True
 except ImportError:
     PYAV_AVAILABLE = False
@@ -407,10 +410,24 @@ class MVFoulsDataset(Dataset):
     
     def _load_video_decord(self, video_path: Path) -> np.ndarray:
         """Load video using decord for faster performance."""
+        # Suppress decord's ffmpeg warnings by temporarily redirecting stderr
+        import sys
+        import os
+        
+        # On Windows, os.devnull is "nul"
+        devnull = open(os.devnull, 'w')
+        old_stderr = os.dup(sys.stderr.fileno())
+        os.dup2(devnull.fileno(), sys.stderr.fileno())
+
         try:
             vr = decord.VideoReader(str(video_path))
             total_frames = len(vr)
             
+            # Restore stderr
+            os.dup2(old_stderr, sys.stderr.fileno())
+            os.close(old_stderr)
+            devnull.close()
+
             # Calculate frame indices
             start_frame = max(0, self.center_frame - self.num_frames // 2)
             end_frame = start_frame + self.num_frames - 1
@@ -460,59 +477,72 @@ class MVFoulsDataset(Dataset):
             return frames[:self.num_frames]
             
         except Exception as e:
+            # Restore stderr in case of an error
+            os.dup2(old_stderr, sys.stderr.fileno())
+            os.close(old_stderr)
+            devnull.close()
             logging.error(f"Error in _load_video_decord for {video_path}: {e}")
             # Fall back to OpenCV
             return self._load_video_opencv(video_path)
     
     def _load_video_pyav(self, video_path: Path) -> np.ndarray:
         """Load video using PyAV for faster performance."""
-        container = av.open(str(video_path))
-        video_stream = container.streams.video[0]
-        
-        # Calculate frame indices
-        total_frames = video_stream.frames
-        start_frame = max(0, self.center_frame - self.num_frames // 2)
-        end_frame = start_frame + self.num_frames - 1
-        
-        if total_frames > 0 and end_frame >= total_frames:
-            end_frame = total_frames - 1
-            start_frame = max(0, end_frame - self.num_frames + 1)
-        
-        frames = []
-        frame_idx = 0
-        
-        for packet in container.demux(video_stream):
-            for frame in packet.decode():
-                if start_frame <= frame_idx < start_frame + self.num_frames:
-                    # Convert to numpy array
-                    img = frame.to_ndarray(format='rgb24')
+        try:
+            container = av.open(str(video_path))
+            video_stream = container.streams.video[0]
+            
+            # Calculate frame indices
+            total_frames = video_stream.frames
+            start_frame = max(0, self.center_frame - self.num_frames // 2)
+            end_frame = start_frame + self.num_frames - 1
+            
+            if total_frames > 0 and end_frame >= total_frames:
+                end_frame = total_frames - 1
+                start_frame = max(0, end_frame - self.num_frames + 1)
+            
+            frames = []
+            frame_idx = 0
+            
+            # Demux and decode
+            for packet in container.demux(video_stream):
+                for frame in packet.decode():
+                    if start_frame <= frame_idx < start_frame + self.num_frames:
+                        # Convert to numpy array
+                        img = frame.to_ndarray(format='rgb24')
+                        
+                        # Resize if needed
+                        if self.target_size is not None:
+                            h, w = self.target_size
+                            img = cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
+                        
+                        frames.append(img)
                     
-                    # Resize if needed
-                    if self.target_size is not None:
-                        h, w = self.target_size
-                        img = cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
-                    
-                    frames.append(img)
-                
-                frame_idx += 1
+                    frame_idx += 1
+                    if frame_idx >= start_frame + self.num_frames:
+                        break
                 if frame_idx >= start_frame + self.num_frames:
                     break
-        
-        container.close()
-        
-        # Handle empty or short videos
-        if not frames:
-            h, w = self.target_size or (224, 224)
-            black_frame = np.zeros((h, w, 3), dtype=np.uint8)
-            frames = [black_frame] * self.num_frames
-        
-        # Pad if needed (more efficient than loop)
-        if len(frames) < self.num_frames:
-            pad_count = self.num_frames - len(frames)
-            last_frame = frames[-1] if frames else np.zeros((224, 224, 3), dtype=np.uint8)
-            frames.extend([last_frame.copy() for _ in range(pad_count)])
-        
-        return np.stack(frames[:self.num_frames], axis=0)
+            
+            container.close()
+            
+            # Handle empty or short videos
+            if not frames:
+                h, w = self.target_size or (224, 224)
+                black_frame = np.zeros((h, w, 3), dtype=np.uint8)
+                frames = [black_frame] * self.num_frames
+            
+            # Pad if needed
+            if len(frames) < self.num_frames:
+                pad_count = self.num_frames - len(frames)
+                last_frame = frames[-1] if frames else np.zeros((224, 224, 3), dtype=np.uint8)
+                frames.extend([last_frame.copy() for _ in range(pad_count)])
+            
+            return np.stack(frames[:self.num_frames], axis=0)
+            
+        except Exception as e:
+            logging.error(f"Error in _load_video_pyav for {video_path}: {e}")
+            # Fall back to OpenCV
+            return self._load_video_opencv(video_path)
     
     def _load_video_opencv(self, video_path: Path) -> np.ndarray:
         """Load video using OpenCV (fallback method)."""
