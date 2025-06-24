@@ -114,6 +114,12 @@ def predict_batch(model: MVFoulsModel, videos: torch.Tensor, device: torch.devic
             
             probabilities = F.softmax(logits, dim=1)
             predictions[task_name] = probabilities
+        
+        # Debug: Log available tasks on first batch
+        if not hasattr(predict_batch, '_debug_logged'):
+            logger = logging.getLogger(__name__)
+            logger.info(f"🔍 Model output tasks: {list(predictions.keys())}")
+            predict_batch._debug_logged = True
     
     return predictions
 
@@ -159,18 +165,33 @@ def convert_action_predictions_to_submission_format(
     metadata: Dict[str, Any]
 ) -> Dict[str, Dict[str, Any]]:
     """Convert action-level predictions to the required submission JSON format."""
+    logger = logging.getLogger(__name__)
     
     results = {}
     class_names = metadata['class_names']
     
+    # Debug: Show available tasks in predictions
+    if action_predictions:
+        sample_action_id = next(iter(action_predictions.keys()))
+        available_tasks = list(action_predictions[sample_action_id].keys())
+        logger.info(f"🔍 Available tasks in predictions: {available_tasks}")
+    
     for action_id, predictions in action_predictions.items():
         # Get action_class prediction
+        if 'action_class' not in predictions:
+            logger.error(f"❌ Missing 'action_class' in predictions for action {action_id}")
+            continue
+            
         action_probs = predictions['action_class'][0]  # Remove batch dimension
         action_class_idx = torch.argmax(action_probs).item()
         action_confidence = torch.max(action_probs).item()
         action_class_name = class_names['action_class'][action_class_idx]
         
         # Get severity prediction
+        if 'severity' not in predictions:
+            logger.error(f"❌ Missing 'severity' in predictions for action {action_id}")
+            continue
+            
         severity_probs = predictions['severity'][0]
         severity_idx = torch.argmax(severity_probs).item()
         severity_confidence = torch.max(severity_probs).item()
@@ -180,10 +201,15 @@ def convert_action_predictions_to_submission_format(
         else:
             severity_value = f"{severity_idx}.0"
         
-        # Get offence prediction
-        offence_probs = predictions['offence'][0]
-        offence_idx = torch.argmax(offence_probs).item()
-        offence_name = class_names['offence'][offence_idx]
+        # Get offence prediction with fallback
+        if 'offence' in predictions:
+            offence_probs = predictions['offence'][0]
+            offence_idx = torch.argmax(offence_probs).item()
+            offence_name = class_names['offence'][offence_idx]
+        else:
+            # Fallback: Use a default offence prediction
+            logger.warning(f"⚠️  Missing 'offence' prediction for action {action_id}, using default")
+            offence_name = "Offence"  # Default fallback
         
         # Create action entry
         results[action_id] = {
