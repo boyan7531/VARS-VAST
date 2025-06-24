@@ -648,6 +648,8 @@ def main():
                        help='Batch size to use after backbone unfreezing starts (default: 3)')
     parser.add_argument('--gradient-accumulation-steps', type=int, default=1,
                         help='Number of steps to accumulate gradients before optimizer step (default: 1)')
+    parser.add_argument('--num-workers', type=int, default=4,
+                        help='Number of worker processes for data loading (default: 4)')
     
     # Other arguments
     parser.add_argument('--output-dir', type=str, default='./outputs_balanced', help='Output directory')
@@ -872,7 +874,7 @@ def main():
             batch_size=args.batch_size,
             sampler=train_sampler,
             shuffle=shuffle,
-            num_workers=4,
+            num_workers=args.num_workers,
             pin_memory=True,
             drop_last=True
         )
@@ -881,7 +883,7 @@ def main():
             val_dataset,
             batch_size=args.batch_size,
             shuffle=False,
-            num_workers=4,
+            num_workers=args.num_workers,
             pin_memory=True,
             drop_last=False
         )
