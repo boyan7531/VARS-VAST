@@ -86,10 +86,8 @@ def predict_batch(model: MVFoulsModel, videos: torch.Tensor, device: torch.devic
         # Handle different output formats
         if isinstance(outputs, tuple):
             # If model returns tuple, convert to dict format
-            # Assuming order: action_class, severity, offence, contact, bodypart, etc.
-            task_names = ['action_class', 'severity', 'offence', 'contact', 'bodypart', 
-                         'upper_body_part', 'multiple_fouls', 'try_to_play', 'touch_ball', 
-                         'handball', 'handball_offence']
+            # Only the 3 core tasks: action_class, severity, offence
+            task_names = ['action_class', 'severity', 'offence']
             outputs_dict = {}
             for i, task_name in enumerate(task_names):
                 if i < len(outputs):

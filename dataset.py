@@ -45,14 +45,6 @@ TASKS_INFO = OrderedDict([
     ("action_class", ["Missing/Empty", "Standing tackling", "Tackling", "Challenge", "Holding", "Elbowing", "High leg", "Pushing", "Dont know", "Dive"]),
     ("severity", ["Missing", "1", "2", "3", "4", "5"]),
     ("offence", ["Missing/Empty", "Offence", "No offence", "Between"]),
-    ("contact", ["Missing/Empty", "With contact", "Without contact"]),
-    ("bodypart", ["Missing/Empty", "Under body", "Upper body"]),
-    ("upper_body_part", ["Missing/Empty", "Use of arms", "Use of shoulder", "Use of shoulders"]),
-    ("multiple_fouls", ["Missing/Empty", "No", "Yes"]),
-    ("try_to_play", ["Missing/Empty", "Yes", "No"]),
-    ("touch_ball", ["Missing/Empty", "No", "Yes", "Maybe"]),
-    ("handball", ["Missing/Empty", "No handball", "Handball"]),
-    ("handball_offence", ["Missing/Empty", "Offence", "No offence"]),
 ])
 
 # Create label-to-index and index-to-label mappings
@@ -62,19 +54,11 @@ IDX2LABEL = {task: labels for task, labels in TASKS_INFO.items()}
 # Number of tasks
 N_TASKS = len(TASKS_INFO)
 
-# Field mapping for annotations - moved to module level to avoid recreation
+# Field mapping for annotations - only for the 3 core tasks
 FIELD_MAP = {
     'action_class': 'Action class',
     'severity': 'Severity',
     'offence': 'Offence',
-    'contact': 'Contact',
-    'bodypart': 'Bodypart',
-    'upper_body_part': 'Upper body part',
-    'multiple_fouls': 'Multiple fouls',
-    'try_to_play': 'Try to play',
-    'touch_ball': 'Touch ball',
-    'handball': 'Handball',
-    'handball_offence': 'Handball offence'
 }
 
 @dataclass
