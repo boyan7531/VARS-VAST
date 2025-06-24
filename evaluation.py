@@ -2,8 +2,8 @@
 """
 MVFouls Model Evaluation Script
 
-This script loads a trained MVFouls model and generates predictions for the test set
-in the required JSON format for submission/evaluation.
+This script loads a trained MVFouls model and generates action-level predictions 
+for the test set by aggregating clip-level predictions.
 """
 
 import argparse
@@ -11,7 +11,8 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
+from collections import defaultdict
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -82,6 +83,19 @@ def predict_batch(model: MVFoulsModel, videos: torch.Tensor, device: torch.devic
         # Get model predictions
         outputs = model(videos)
         
+        # Handle different output formats
+        if isinstance(outputs, tuple):
+            # If model returns tuple, convert to dict format
+            # Assuming order: action_class, severity, offence, contact, bodypart, etc.
+            task_names = ['action_class', 'severity', 'offence', 'contact', 'bodypart', 
+                         'upper_body_part', 'multiple_fouls', 'try_to_play', 'touch_ball', 
+                         'handball', 'handball_offence']
+            outputs_dict = {}
+            for i, task_name in enumerate(task_names):
+                if i < len(outputs):
+                    outputs_dict[task_name] = outputs[i]
+            outputs = outputs_dict
+        
         # Convert logits to probabilities
         predictions = {}
         for task_name, logits in outputs.items():
@@ -91,30 +105,60 @@ def predict_batch(model: MVFoulsModel, videos: torch.Tensor, device: torch.devic
     return predictions
 
 
-def convert_predictions_to_submission_format(
-    predictions: Dict[str, torch.Tensor], 
-    metadata: Dict[str, Any],
-    start_idx: int = 0
+def aggregate_clip_predictions_to_action(
+    clip_predictions: List[Dict[str, torch.Tensor]], 
+    action_ids: List[str]
+) -> Dict[str, Dict[str, torch.Tensor]]:
+    """Aggregate clip-level predictions to action-level predictions."""
+    logger = logging.getLogger(__name__)
+    
+    # Group predictions by action_id
+    action_groups = defaultdict(list)
+    for i, action_id in enumerate(action_ids):
+        action_groups[action_id].append(i)
+    
+    logger.info(f"📊 Aggregating {len(clip_predictions)} clip predictions into {len(action_groups)} actions")
+    
+    action_predictions = {}
+    
+    for action_id, clip_indices in action_groups.items():
+        # Aggregate predictions for this action
+        aggregated = {}
+        
+        for task_name in clip_predictions[0].keys():
+            # Collect all clip predictions for this task
+            task_preds = []
+            for clip_idx in clip_indices:
+                task_preds.append(clip_predictions[clip_idx][task_name])
+            
+            # Stack and average the predictions
+            stacked_preds = torch.stack(task_preds, dim=0)
+            averaged_preds = torch.mean(stacked_preds, dim=0, keepdim=True)
+            aggregated[task_name] = averaged_preds
+        
+        action_predictions[action_id] = aggregated
+    
+    return action_predictions
+
+
+def convert_action_predictions_to_submission_format(
+    action_predictions: Dict[str, Dict[str, torch.Tensor]], 
+    metadata: Dict[str, Any]
 ) -> Dict[str, Dict[str, Any]]:
-    """Convert model predictions to the required submission JSON format."""
+    """Convert action-level predictions to the required submission JSON format."""
     
-    batch_size = len(next(iter(predictions.values())))
     results = {}
-    
-    # Get class names for mapping indices to labels
     class_names = metadata['class_names']
     
-    for i in range(batch_size):
-        action_idx = str(start_idx + i)
-        
+    for action_id, predictions in action_predictions.items():
         # Get action_class prediction
-        action_probs = predictions['action_class'][i]
+        action_probs = predictions['action_class'][0]  # Remove batch dimension
         action_class_idx = torch.argmax(action_probs).item()
         action_confidence = torch.max(action_probs).item()
         action_class_name = class_names['action_class'][action_class_idx]
         
         # Get severity prediction
-        severity_probs = predictions['severity'][i]
+        severity_probs = predictions['severity'][0]
         severity_idx = torch.argmax(severity_probs).item()
         severity_confidence = torch.max(severity_probs).item()
         # Convert severity index to string (0->Missing, 1->1.0, 2->2.0, etc.)
@@ -124,12 +168,12 @@ def convert_predictions_to_submission_format(
             severity_value = f"{severity_idx}.0"
         
         # Get offence prediction
-        offence_probs = predictions['offence'][i]
+        offence_probs = predictions['offence'][0]
         offence_idx = torch.argmax(offence_probs).item()
         offence_name = class_names['offence'][offence_idx]
         
         # Create action entry
-        results[action_idx] = {
+        results[action_id] = {
             "Action class": action_class_name,
             "Offence": offence_name,
             "Severity": severity_value,
@@ -142,6 +186,7 @@ def convert_predictions_to_submission_format(
 
 def evaluate_test_set(
     model: MVFoulsModel,
+    test_dataset: MVFoulsDataset,
     test_loader: DataLoader,
     device: torch.device,
     output_file: str
@@ -150,45 +195,61 @@ def evaluate_test_set(
     logger = logging.getLogger(__name__)
     
     logger.info(f"🔮 Starting evaluation on test set...")
+    logger.info(f"   Test clips: {len(test_dataset)}")
     logger.info(f"   Test batches: {len(test_loader)}")
     logger.info(f"   Output file: {output_file}")
     
     # Get metadata for class name mapping
     metadata = get_task_metadata()
     
-    # Initialize results structure
-    submission_data = {
-        "Set": "test",
-        "Actions": {}
-    }
-    
-    action_idx = 0
-    total_processed = 0
+    # Collect all clip predictions and their corresponding action IDs
+    all_clip_predictions = []
+    all_action_ids = []
     
     # Process test set in batches
-    with tqdm(test_loader, desc="Evaluating", unit="batch") as pbar:
-        for batch_idx, (videos, _) in enumerate(pbar):
+    with tqdm(test_loader, desc="Evaluating clips", unit="batch") as pbar:
+        for batch_idx, (videos, targets) in enumerate(pbar):
             # Generate predictions
-            predictions = predict_batch(model, videos, device)
+            batch_predictions = predict_batch(model, videos, device)
             
-            # Convert to submission format
-            batch_results = convert_predictions_to_submission_format(
-                predictions, metadata, start_idx=action_idx
-            )
+            # Get action IDs for this batch
+            batch_start_idx = batch_idx * test_loader.batch_size
+            batch_end_idx = min(batch_start_idx + len(videos), len(test_dataset))
             
-            # Add to submission data
-            submission_data["Actions"].update(batch_results)
-            
-            # Update counters
-            batch_size = len(videos)
-            action_idx += batch_size
-            total_processed += batch_size
+            for i in range(len(videos)):
+                clip_idx = batch_start_idx + i
+                if clip_idx < len(test_dataset):
+                    # Get action ID from dataset
+                    clip_info = test_dataset.dataset_index[clip_idx]
+                    action_id = clip_info.action_id
+                    
+                    # Extract single clip predictions
+                    clip_pred = {}
+                    for task_name, task_preds in batch_predictions.items():
+                        clip_pred[task_name] = task_preds[i:i+1]  # Keep batch dimension
+                    
+                    all_clip_predictions.append(clip_pred)
+                    all_action_ids.append(action_id)
             
             # Update progress bar
             pbar.set_postfix({
-                'Processed': total_processed,
+                'Clips': len(all_clip_predictions),
                 'Batch': f'{batch_idx+1}/{len(test_loader)}'
             })
+    
+    logger.info(f"📊 Collected predictions for {len(all_clip_predictions)} clips")
+    
+    # Aggregate clip predictions to action predictions
+    action_predictions = aggregate_clip_predictions_to_action(all_clip_predictions, all_action_ids)
+    
+    # Convert to submission format
+    submission_actions = convert_action_predictions_to_submission_format(action_predictions, metadata)
+    
+    # Create final submission data
+    submission_data = {
+        "Set": "test",
+        "Actions": submission_actions
+    }
     
     # Save results to JSON file
     logger.info(f"💾 Saving results to {output_file}")
@@ -196,7 +257,8 @@ def evaluate_test_set(
         json.dump(submission_data, f, indent=2)
     
     logger.info(f"✅ Evaluation complete!")
-    logger.info(f"   Total actions processed: {total_processed}")
+    logger.info(f"   Total clips processed: {len(all_clip_predictions)}")
+    logger.info(f"   Total actions predicted: {len(submission_actions)}")
     logger.info(f"   Results saved to: {output_file}")
     
     # Print sample of results
@@ -272,7 +334,7 @@ def main():
             num_frames=32
         )
         
-        logger.info(f"📊 Test dataset size: {len(test_dataset)}")
+        logger.info(f"📊 Test dataset size: {len(test_dataset)} clips")
         
         # Create test dataloader
         test_loader = DataLoader(
@@ -285,7 +347,7 @@ def main():
         )
         
         # Run evaluation
-        evaluate_test_set(model, test_loader, device, args.output_file)
+        evaluate_test_set(model, test_dataset, test_loader, device, args.output_file)
         
     except Exception as e:
         logger.error(f"💥 Evaluation failed: {e}")
