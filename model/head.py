@@ -25,6 +25,71 @@ except ImportError:
     compute_overall_metrics = None
 
 
+class ClipPooling(nn.Module):
+    """Pooling module for aggregating multiple clips into a single representation."""
+    
+    def __init__(self, pooling_type: str = 'mean', in_dim: int = 1024, temperature: float = 1.0):
+        """
+        Args:
+            pooling_type: Type of pooling ('mean', 'max', 'attention')
+            in_dim: Input feature dimension
+            temperature: Temperature for attention softmax
+        """
+        super().__init__()
+        self.pooling_type = pooling_type
+        self.temperature = temperature
+        
+        if pooling_type == 'attention':
+            # Learnable attention pooling
+            self.attention = nn.Sequential(
+                nn.Linear(in_dim, in_dim // 4),
+                nn.ReLU(inplace=True),
+                nn.Linear(in_dim // 4, 1)
+            )
+        
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Args:
+            x: Input tensor of shape (B, N_clips, D)
+            mask: Optional mask of shape (B, N_clips) indicating valid clips
+            
+        Returns:
+            Pooled tensor of shape (B, D)
+        """
+        if self.pooling_type == 'mean':
+            if mask is not None:
+                # Masked mean pooling
+                mask_expanded = mask.unsqueeze(-1).float()  # (B, N_clips, 1)
+                masked_x = x * mask_expanded
+                return masked_x.sum(dim=1) / mask_expanded.sum(dim=1).clamp(min=1e-8)
+            else:
+                return x.mean(dim=1)
+        
+        elif self.pooling_type == 'max':
+            if mask is not None:
+                # Masked max pooling
+                mask_expanded = mask.unsqueeze(-1)  # (B, N_clips, 1)
+                masked_x = x.masked_fill(~mask_expanded, float('-inf'))
+                return masked_x.max(dim=1)[0]
+            else:
+                return x.max(dim=1)[0]
+        
+        elif self.pooling_type == 'attention':
+            # Learnable attention pooling
+            attn_weights = self.attention(x)  # (B, N_clips, 1)
+            
+            if mask is not None:
+                # Apply mask to attention weights
+                mask_expanded = mask.unsqueeze(-1)  # (B, N_clips, 1)
+                attn_weights = attn_weights.masked_fill(~mask_expanded, float('-inf'))
+            
+            attn_weights = F.softmax(attn_weights / self.temperature, dim=1)  # (B, N_clips, 1)
+            return (x * attn_weights).sum(dim=1)  # (B, D)
+        
+        else:
+            raise ValueError(f"Unknown pooling type: {self.pooling_type}")
+
+
 class AttentionPool(nn.Module):
     """Attention-based pooling over spatial or temporal dimensions."""
     
@@ -103,6 +168,7 @@ class MVFoulsHead(nn.Module):
     """
     Comprehensive head for MVFouls predictions.
     Converts backbone features into predictions with configurable pooling, temporal processing, and losses.
+    Supports both single-clip and bag-of-clips (action-level) training.
     """
     
     def __init__(
@@ -132,7 +198,10 @@ class MVFoulsHead(nn.Module):
         num_shared_layers: int = 2,  # Number of shared layers before task-specific heads
         task_specific_layers: int = 1,  # Number of task-specific layers
         use_batch_norm: bool = True,  # Use batch normalization
-        activation: str = 'relu'  # Activation function
+        activation: str = 'relu',  # Activation function
+        # Bag-of-clips parameters
+        clip_pooling_type: str = 'mean',  # 'mean', 'max', 'attention'
+        clip_pooling_temperature: float = 1.0  # Temperature for attention pooling
     ):
         super().__init__()
         
@@ -149,6 +218,10 @@ class MVFoulsHead(nn.Module):
         self.freeze_mode = freeze_mode
         self.gradient_checkpointing = gradient_checkpointing
         self.enable_localizer = enable_localizer
+        
+        # Bag-of-clips parameters
+        self.clip_pooling_type = clip_pooling_type
+        self.clip_pooling_temperature = clip_pooling_temperature
         
         # Multi-task configuration
         self.multi_task = multi_task
@@ -186,6 +259,13 @@ class MVFoulsHead(nn.Module):
             self.task_weights_scalar = task_loss_weights or {}
             self.num_classes = num_classes
             self.loss_type = loss_type
+        
+        # Build clip pooling module
+        self.clip_pooling = ClipPooling(
+            pooling_type=clip_pooling_type,
+            in_dim=in_dim,
+            temperature=clip_pooling_temperature
+        )
         
         # Build pooling module
         self._pool = self._build_pooling_module()
@@ -406,12 +486,17 @@ class MVFoulsHead(nn.Module):
         else:
             raise ValueError(f"Unsupported pooling type for spatial reduction: {self.pooling_type}")
     
-    def forward(self, x: torch.Tensor, return_dict: bool = None) -> Union[Tuple[torch.Tensor, Dict[str, Any]], Tuple[Dict[str, torch.Tensor], Dict[str, Any]]]:
+    def forward(self, x: torch.Tensor, clip_mask: Optional[torch.Tensor] = None, return_dict: bool = None) -> Union[Tuple[torch.Tensor, Dict[str, Any]], Tuple[Dict[str, torch.Tensor], Dict[str, Any]]]:
         """
         Forward pass through the head.
         
         Args:
-            x: Input tensor, either (B,C) or (B,T,H,W,C)
+            x: Input tensor, supports multiple formats:
+               - (B, C): Single feature vector per sample
+               - (B, T, H, W, C): Video with temporal and spatial dimensions
+               - (B, N_clips, C): Bag-of-clips with pre-extracted features
+               - (B, N_clips, T, H, W, C): Bag-of-clips with full video dimensions
+            clip_mask: Optional mask for bag-of-clips (B, N_clips) indicating valid clips
             return_dict: If True, return dict of logits. If False, return single tensor.
                         If None, use self.multi_task to decide.
             
@@ -428,15 +513,28 @@ class MVFoulsHead(nn.Module):
             
         extras = {}
         
-        # Handle 5D input (B,T,H,W,C)
+        # Handle bag-of-clips input (B, N_clips, ...) -> flatten to (B*N_clips, ...)
+        original_batch_size = x.shape[0]
+        if x.dim() == 6:  # (B, N_clips, T, H, W, C)
+            batch_size, n_clips = x.shape[:2]
+            x = x.view(-1, *x.shape[2:])  # (B*N_clips, T, H, W, C)
+            bag_of_clips = True
+        elif x.dim() == 3 and clip_mask is not None:  # (B, N_clips, C) with mask
+            batch_size, n_clips = x.shape[:2]
+            x = x.view(-1, x.shape[-1])  # (B*N_clips, C)
+            bag_of_clips = True
+        else:
+            bag_of_clips = False
+        
+        # Handle 5D input (B,T,H,W,C) or (B*N_clips,T,H,W,C)
         if x.dim() == 5:
             if self.pooling_type is None:
                 raise ValueError('pooling=None but 5-D input provided')
             
             if self.pooling_type == 'attention':
-                x = self._pool(x)  # (B, C) - attention pools over all spatial-temporal dims
+                x = self._pool(x)  # (B, C) or (B*N_clips, C) - attention pools over all spatial-temporal dims
             else:
-                x = self._reduce_spatial(x)  # (B, T, C)
+                x = self._reduce_spatial(x)  # (B, T, C) or (B*N_clips, T, C)
         
         # Store frame logits before temporal pooling if localizer is enabled
         if self.localizer is not None and x.dim() == 3:
@@ -457,14 +555,21 @@ class MVFoulsHead(nn.Module):
                 extras['frame_logits'] = frame_logits
         
         # Handle temporal dimension
-        if x.dim() == 3:  # (B, T, C)
+        if x.dim() == 3:  # (B, T, C) or (B*N_clips, T, C)
             if self._temporal is not None:
                 if self.gradient_checkpointing and self.training:
                     x = torch.utils.checkpoint.checkpoint(self._temporal, x)
                 else:
-                    x = self._temporal(x)  # (B, C)
+                    x = self._temporal(x)  # (B, C) or (B*N_clips, C)
             else:
                 x = x.mean(dim=1)  # Average over temporal dimension
+        
+        # Handle bag-of-clips pooling
+        if bag_of_clips:
+            # Reshape back to (B, N_clips, C) for clip pooling
+            x = x.view(batch_size, n_clips, -1)
+            # Apply clip pooling to aggregate clips into action-level features
+            x = self.clip_pooling(x, clip_mask)  # (B, C)
         
         # Store features before shared layers
         extras['feat'] = x

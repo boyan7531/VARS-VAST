@@ -176,6 +176,10 @@ def convert_action_predictions_to_submission_format(
         available_tasks = list(action_predictions[sample_action_id].keys())
         logger.info(f"🔍 Available tasks in predictions: {available_tasks}")
     
+    # Track missing predictions
+    missing_offence_count = 0
+    total_actions = len(action_predictions)
+    
     for action_id, predictions in action_predictions.items():
         # Get action_class prediction
         if 'action_class' not in predictions:
@@ -207,8 +211,8 @@ def convert_action_predictions_to_submission_format(
             offence_idx = torch.argmax(offence_probs).item()
             offence_name = class_names['offence'][offence_idx]
         else:
-            # Fallback: Use a default offence prediction
-            logger.warning(f"⚠️  Missing 'offence' prediction for action {action_id}, using default")
+            # Fallback: Use a default offence prediction (silent fallback)
+            missing_offence_count += 1
             offence_name = "Offence"  # Default fallback
         
         # Create action entry
@@ -219,6 +223,10 @@ def convert_action_predictions_to_submission_format(
             "Severity_confidence": float(severity_confidence),
             "Action_confidence": float(action_confidence)
         }
+    
+    # Log summary of missing predictions
+    if missing_offence_count > 0:
+        logger.info(f"⚠️  Missing 'offence' predictions for {missing_offence_count}/{total_actions} actions, used default fallback")
     
     return results
 

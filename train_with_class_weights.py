@@ -44,7 +44,7 @@ from tqdm import tqdm
 sys.path.append(str(Path(__file__).parent))
 
 from model.mvfouls_model import MVFoulsModel, build_multi_task_model, build_single_task_model
-from dataset import MVFoulsDataset
+from dataset import MVFoulsDataset, bag_of_clips_collate_fn
 from transforms import get_video_transforms
 from training_utils import MultiTaskTrainer
 from utils import (
@@ -460,7 +460,9 @@ def create_balanced_model(
             loss_types_per_task=loss_types_per_task,
             class_weights=task_weights,
             task_loss_weights=primary_task_weights,
-            backbone_checkpointing=backbone_checkpointing
+            backbone_checkpointing=backbone_checkpointing,
+            clip_pooling_type=args.clip_pooling_type,
+            clip_pooling_temperature=args.clip_pooling_temperature
         )
         
     else:
@@ -495,6 +497,8 @@ def create_balanced_model(
             head_loss_type='ce',  # Always use CrossEntropy
             class_weights=class_weights,
             backbone_checkpointing=backbone_checkpointing,
+            clip_pooling_type=args.clip_pooling_type,
+            clip_pooling_temperature=args.clip_pooling_temperature,
             **filtered_kwargs
         )
     
@@ -661,7 +665,7 @@ def main():
                         help='Weight multiplier for primary tasks (action_class, severity) (default: 3.0)')
     parser.add_argument('--auxiliary-task-weight', type=float, default=1.0,
                         help='Weight multiplier for auxiliary tasks (default: 1.0)')
-    parser.add_argument('--primary-tasks', nargs='+', default=['action_class', 'severity'],
+    parser.add_argument('--primary-tasks', nargs='+', default=['action_class', 'severity', 'offence'],
                         help='List of primary task names (default: action_class severity)')
     
     # Adaptive learning rate arguments
@@ -698,6 +702,22 @@ def main():
     parser.add_argument('--train-fraction', type=float, default=1.0,
                         help='Fraction of training data to use (e.g., 0.2 for 20% smoke test)')
     
+    # Add bag-of-clips arguments
+    parser.add_argument('--bag-of-clips', action='store_true',
+                        help='Enable bag-of-clips (action-level) training mode')
+    parser.add_argument('--max-clips-per-action', type=int, default=8,
+                        help='Maximum number of clips per action in bag-of-clips mode (default: 8)')
+    parser.add_argument('--min-clips-per-action', type=int, default=1,
+                        help='Minimum number of clips per action (actions with fewer clips excluded) (default: 1)')
+    parser.add_argument('--clip-sampling-strategy', type=str, default='random',
+                        choices=['random', 'uniform', 'all'],
+                        help='Strategy for sampling clips when exceeding max-clips-per-action (default: random)')
+    parser.add_argument('--clip-pooling-type', type=str, default='mean',
+                        choices=['mean', 'max', 'attention'],
+                        help='Pooling strategy for aggregating clips in bag-of-clips mode (default: mean)')
+    parser.add_argument('--clip-pooling-temperature', type=float, default=1.0,
+                        help='Temperature for attention pooling in bag-of-clips mode (default: 1.0)')
+    
     args = parser.parse_args()
     
     # Setup logging
@@ -731,7 +751,11 @@ def main():
             split=train_split,
             transform=transforms['train'],
             load_annotations=True,
-            num_frames=32
+            num_frames=32,
+            bag_of_clips=args.bag_of_clips,
+            max_clips_per_action=args.max_clips_per_action,
+            min_clips_per_action=args.min_clips_per_action,
+            clip_sampling_strategy=args.clip_sampling_strategy
         )
         
         # Apply fractional subset for smoke tests
@@ -750,7 +774,11 @@ def main():
             split=val_split,
             transform=transforms['val'],
             load_annotations=True,
-            num_frames=32
+            num_frames=32,
+            bag_of_clips=args.bag_of_clips,
+            max_clips_per_action=args.max_clips_per_action,
+            min_clips_per_action=args.min_clips_per_action,
+            clip_sampling_strategy='uniform'  # Use uniform for validation
         )
         
         logger.info(f"📊 Dataset sizes: {len(train_dataset)} train, {len(val_dataset)} val")
@@ -821,8 +849,25 @@ def main():
             primary_task_weights=primary_task_weights,
             backbone_checkpointing=True,  # Enable gradient checkpointing
             use_class_weights=not args.disable_class_weights,  # Use simple inverse frequency class weights
-            class_weight_cap=args.class_weight_cap
+            class_weight_cap=args.class_weight_cap,
+            clip_pooling_type=args.clip_pooling_type,
+            clip_pooling_temperature=args.clip_pooling_temperature
         )
+        
+        # Log bag-of-clips configuration
+        if args.bag_of_clips:
+            logger.info("🎬 BAG-OF-CLIPS MODE ENABLED:")
+            logger.info(f"   Max clips per action: {args.max_clips_per_action}")
+            logger.info(f"   Min clips per action: {args.min_clips_per_action}")
+            logger.info(f"   Clip sampling strategy: {args.clip_sampling_strategy}")
+            logger.info(f"   Clip pooling type: {args.clip_pooling_type}")
+            logger.info(f"   Clip pooling temperature: {args.clip_pooling_temperature}")
+            logger.info(f"   Training items: {len(train_dataset)} actions (instead of clips)")
+            logger.info(f"   Validation items: {len(val_dataset)} actions (instead of clips)")
+        else:
+            logger.info("🎬 CLIP-LEVEL MODE (standard)")
+            logger.info(f"   Training items: {len(train_dataset)} clips")
+            logger.info(f"   Validation items: {len(val_dataset)} clips")
         
         # Create unfreezing schedule
         if args.freeze_mode == 'gradual' and not args.disable_gradual_unfreezing:
@@ -869,6 +914,9 @@ def main():
         else:
             logger.info("⚠️  Option A: WeightedRandomSampler disabled (use --balanced-sampling to enable)")
         
+        # Choose collate function based on mode
+        collate_fn = bag_of_clips_collate_fn if args.bag_of_clips else None
+        
         train_loader = DataLoader(
             train_dataset,
             batch_size=args.batch_size,
@@ -876,7 +924,8 @@ def main():
             shuffle=shuffle,
             num_workers=args.num_workers,
             pin_memory=True,
-            drop_last=True
+            drop_last=True,
+            collate_fn=collate_fn
         )
         
         val_loader = DataLoader(
@@ -885,7 +934,8 @@ def main():
             shuffle=False,
             num_workers=args.num_workers,
             pin_memory=True,
-            drop_last=False
+            drop_last=False,
+            collate_fn=collate_fn
         )
         
         # Create optimizer with separate parameter groups for backbone and head

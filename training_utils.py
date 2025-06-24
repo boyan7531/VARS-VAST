@@ -94,22 +94,31 @@ class MultiTaskTrainer:
     
     def train_step(
         self,
-        videos: torch.Tensor,
-        targets: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        batch_data: Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]],
         scaler: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
         Perform a single training step.
         
         Args:
-            videos: Input video tensor (B, C, T, H, W) or (B, T, H, W, C)
-            targets: Target tensor or dict for each task
+            batch_data: Either (videos, targets) for standard mode or 
+                       (videos, targets, clip_masks, num_clips) for bag-of-clips mode
             scaler: Optional GradScaler for mixed precision training
             
         Returns:
             Dict with loss and metrics information
         """
         self.model.train()
+        
+        # Unpack batch data
+        if len(batch_data) == 4:
+            # Bag-of-clips mode: (videos, targets, clip_masks, num_clips)
+            videos, targets, clip_masks, num_clips = batch_data
+            clip_masks = clip_masks.to(self.device)
+        else:
+            # Standard mode: (videos, targets)
+            videos, targets = batch_data
+            clip_masks = None
         
         # Move inputs to device
         videos = videos.to(self.device)
@@ -150,7 +159,7 @@ class MultiTaskTrainer:
         
         # Forward pass
         if self.model.multi_task:
-            logits_dict, extras = self.model(videos, return_dict=True)
+            logits_dict, extras = self.model(videos, clip_mask=clip_masks, return_dict=True)
             
             # Filter logits for curriculum learning
             if self.curriculum_strategy:
@@ -165,7 +174,7 @@ class MultiTaskTrainer:
             # so we don't double-apply them here
             total_loss = loss_dict['total_loss']
         else:
-            logits, extras = self.model(videos, return_dict=False)
+            logits, extras = self.model(videos, clip_mask=clip_masks, return_dict=False)
             targets = targets.to(self.device)
             
             # For single-task training, extract the main task (offence detection)
@@ -236,10 +245,8 @@ class MultiTaskTrainer:
         epoch_start_time = time.time()
         
         for batch_idx, batch in enumerate(dataloader):
-            videos, targets = batch
-            
-            # Training step
-            step_results = self.train_step(videos, targets)
+            # Training step - pass the entire batch to train_step
+            step_results = self.train_step(batch)
             epoch_losses.append(step_results['total_loss'])
             
             # Logging
@@ -307,13 +314,22 @@ class MultiTaskTrainer:
             for batch_idx, batch in enumerate(eval_pbar):
                 if max_batches and batch_idx >= max_batches:
                     break
-                    
-                videos, targets = batch
+                
+                # Unpack batch data
+                if len(batch) == 4:
+                    # Bag-of-clips mode: (videos, targets, clip_masks, num_clips)
+                    videos, targets, clip_masks, num_clips = batch
+                    clip_masks = clip_masks.to(self.device)
+                else:
+                    # Standard mode: (videos, targets)
+                    videos, targets = batch
+                    clip_masks = None
+                
                 videos = videos.to(self.device)
                 
                 # Forward pass
                 if self.model.multi_task:
-                    logits_dict, extras = self.model(videos, return_dict=True)
+                    logits_dict, extras = self.model(videos, clip_mask=clip_masks, return_dict=True)
                     
                     # Handle target format for multi-task
                     if isinstance(targets, dict):
@@ -336,7 +352,7 @@ class MultiTaskTrainer:
                     all_logits.append(logits_dict)
                     all_targets.append(targets_dict)
                 else:
-                    logits, extras = self.model(videos, return_dict=False)
+                    logits, extras = self.model(videos, clip_mask=clip_masks, return_dict=False)
                     targets = targets.to(self.device)
                     
                     # For single-task training, extract the main task (offence detection)

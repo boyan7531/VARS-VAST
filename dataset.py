@@ -7,9 +7,10 @@ import cv2
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Union
 import glob
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 import logging
+import random
 
 # Try to import modern video decoders (fallback to OpenCV)
 try:
@@ -193,6 +194,8 @@ class MVFoulsDataset(Dataset):
     """
     PyTorch Dataset for MVFouls video dataset.
     
+    Supports both clip-level and action-level (bag-of-clips) training modes.
+    
     Dataset structure:
     - mvfouls/
       - train_720p/
@@ -225,7 +228,12 @@ class MVFoulsDataset(Dataset):
         cache_mode: str = "none",  # "none", "disk", "mem"
         video_list: Optional[List[str]] = None,
         annotations_dict: Optional[Dict] = None,
-        return_uint8: bool = True
+        return_uint8: bool = True,
+        # New bag-of-clips parameters
+        bag_of_clips: bool = False,
+        max_clips_per_action: int = 8,
+        min_clips_per_action: int = 1,
+        clip_sampling_strategy: str = 'random'  # 'random', 'uniform', 'all'
     ):
         """
         Args:
@@ -240,6 +248,10 @@ class MVFoulsDataset(Dataset):
             video_list (List[str]): Optional list of video paths (for unit testing)
             annotations_dict (Dict): Optional annotations dict (for unit testing)
             return_uint8 (bool): Return uint8 tensors to save memory (default: True)
+            bag_of_clips (bool): If True, return all clips from an action as a bag
+            max_clips_per_action (int): Maximum clips per action (for memory management)
+            min_clips_per_action (int): Minimum clips per action (actions with fewer clips are excluded)
+            clip_sampling_strategy (str): How to sample clips when exceeding max_clips_per_action
         """
         # Store parameters
         self.split = split
@@ -249,6 +261,12 @@ class MVFoulsDataset(Dataset):
         self.num_frames = num_frames
         self.cache_mode = cache_mode
         self.return_uint8 = return_uint8
+        
+        # New bag-of-clips parameters
+        self.bag_of_clips = bag_of_clips
+        self.max_clips_per_action = max_clips_per_action
+        self.min_clips_per_action = min_clips_per_action
+        self.clip_sampling_strategy = clip_sampling_strategy
         
         # Memory cache for "mem" mode
         self._memory_cache = {} if cache_mode == "mem" else None
@@ -286,6 +304,10 @@ class MVFoulsDataset(Dataset):
         # Process annotations to create numeric labels after dataset_index is built
         if self.load_annotations:
             self._process_annotations()
+        
+        # Group clips by action for bag-of-clips mode
+        if self.bag_of_clips:
+            self._build_action_groups()
         
     def _load_annotations(self):
         """Load annotations from JSON file."""
@@ -397,6 +419,54 @@ class MVFoulsDataset(Dataset):
             
             # Store as tensor
             clip_info.numeric_labels = torch.tensor(numeric_labels, dtype=torch.long)
+    
+    def _build_action_groups(self):
+        """Group clips by action_id for bag-of-clips training."""
+        action_groups = defaultdict(list)
+        
+        # Group clips by action_id
+        for clip_info in self.dataset_index:
+            action_groups[clip_info.action_id].append(clip_info)
+        
+        # Filter out actions with too few clips
+        filtered_groups = {}
+        excluded_count = 0
+        
+        for action_id, clips in action_groups.items():
+            if len(clips) >= self.min_clips_per_action:
+                filtered_groups[action_id] = clips
+            else:
+                excluded_count += len(clips)
+        
+        if excluded_count > 0:
+            logging.info(f"Excluded {excluded_count} clips from {len(action_groups) - len(filtered_groups)} actions "
+                        f"with fewer than {self.min_clips_per_action} clips")
+        
+        # Store action groups and create action index
+        self.action_groups = filtered_groups
+        self.action_index = list(filtered_groups.keys())
+        
+        logging.info(f"Bag-of-clips mode: {len(self.action_index)} actions, "
+                    f"avg {sum(len(clips) for clips in filtered_groups.values()) / len(filtered_groups):.1f} clips/action")
+
+    def _sample_clips_from_action(self, action_id: str) -> List[ClipInfo]:
+        """Sample clips from an action based on the sampling strategy."""
+        clips = self.action_groups[action_id]
+        
+        if len(clips) <= self.max_clips_per_action:
+            return clips
+        
+        if self.clip_sampling_strategy == 'random':
+            return random.sample(clips, self.max_clips_per_action)
+        elif self.clip_sampling_strategy == 'uniform':
+            # Sample uniformly across the clip sequence
+            indices = np.linspace(0, len(clips) - 1, self.max_clips_per_action, dtype=int)
+            return [clips[i] for i in indices]
+        elif self.clip_sampling_strategy == 'all':
+            # Return all clips (ignore max_clips_per_action)
+            return clips
+        else:
+            raise ValueError(f"Unknown clip sampling strategy: {self.clip_sampling_strategy}")
     
     def _safe_float_conversion(self, value) -> float:
         """Safely convert a value to float, handling empty strings and invalid values."""
@@ -688,18 +758,34 @@ class MVFoulsDataset(Dataset):
         return video_tensor
     
     def __len__(self) -> int:
-        """Return the total number of video clips in the dataset."""
-        return len(self.dataset_index)
+        """Return the total number of items in the dataset."""
+        if self.bag_of_clips:
+            return len(self.action_index)
+        else:
+            return len(self.dataset_index)
     
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[List[torch.Tensor], torch.Tensor]]:
         """
-        Get a single video clip from the dataset.
+        Get a single item from the dataset.
         
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]: (video_tensor, targets_tensor)
+            If bag_of_clips=False:
+                Tuple[torch.Tensor, torch.Tensor]: (video_tensor, targets_tensor)
                 - video_tensor: Shape (C, T, H, W) after transforms
                 - targets_tensor: Shape (N_TASKS,) with integer class labels
+            
+            If bag_of_clips=True:
+                Tuple[List[torch.Tensor], torch.Tensor]: (video_list, targets_tensor)
+                - video_list: List of video tensors, each shape (C, T, H, W)
+                - targets_tensor: Shape (N_TASKS,) with integer class labels (same for all clips in action)
         """
+        if self.bag_of_clips:
+            return self._getitem_bag_of_clips(idx)
+        else:
+            return self._getitem_single_clip(idx)
+    
+    def _getitem_single_clip(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Get a single clip (original behavior)."""
         if idx >= len(self.dataset_index):
             raise IndexError(f"Index {idx} out of range for dataset of size {len(self.dataset_index)}")
         
@@ -722,13 +808,47 @@ class MVFoulsDataset(Dataset):
         }
         
         # Apply transforms if specified
-        # Note: Transforms should handle (T, H, W, C) uint8 format
-        # Most video transforms expect this format and will convert to float/normalize
         if self.transform:
             sample = self.transform(sample)
         
-        # Return as tuple
         return sample['video'], sample['targets']
+    
+    def _getitem_bag_of_clips(self, idx: int) -> Tuple[List[torch.Tensor], torch.Tensor]:
+        """Get all clips from an action (bag-of-clips mode)."""
+        if idx >= len(self.action_index):
+            raise IndexError(f"Index {idx} out of range for dataset of size {len(self.action_index)}")
+        
+        action_id = self.action_index[idx]
+        clip_infos = self._sample_clips_from_action(action_id)
+        
+        # Load all videos for this action
+        videos = []
+        targets = None
+        
+        for clip_info in clip_infos:
+            # Load the video
+            video = self._load_video(clip_info.clip_path)
+            
+            # Get numeric labels (same for all clips in the action)
+            if targets is None:
+                if self.load_annotations and clip_info.numeric_labels is not None:
+                    targets = clip_info.numeric_labels
+                else:
+                    targets = torch.zeros(N_TASKS, dtype=torch.long)
+            
+            # Prepare sample for transforms
+            sample = {
+                'video': video,
+                'targets': targets
+            }
+            
+            # Apply transforms if specified
+            if self.transform:
+                sample = self.transform(sample)
+            
+            videos.append(sample['video'])
+        
+        return videos, targets
     
     def get_action_ids(self) -> List[Union[int, str]]:
         """Get list of all unique action IDs in the dataset."""
@@ -820,6 +940,61 @@ class MVFoulsDataset(Dataset):
         return info
 
 
+def bag_of_clips_collate_fn(batch):
+    """
+    Custom collate function for bag-of-clips training.
+    
+    Args:
+        batch: List of (videos, targets) where videos is a list of tensors
+        
+    Returns:
+        Tuple containing:
+        - videos: Tensor of shape (B, max_clips, C, T, H, W) 
+        - targets: Tensor of shape (B, N_TASKS)
+        - clip_masks: Tensor of shape (B, max_clips) indicating valid clips
+        - num_clips: Tensor of shape (B,) indicating number of clips per action
+    """
+    videos_batch = []
+    targets_batch = []
+    num_clips_batch = []
+    
+    for videos, targets in batch:
+        if isinstance(videos, list):
+            # Bag-of-clips mode
+            videos_batch.append(videos)
+            targets_batch.append(targets)
+            num_clips_batch.append(len(videos))
+        else:
+            # Single clip mode (fallback)
+            videos_batch.append([videos])
+            targets_batch.append(targets)
+            num_clips_batch.append(1)
+    
+    # Find maximum number of clips in this batch
+    max_clips = max(num_clips_batch)
+    
+    # Stack targets
+    targets_tensor = torch.stack(targets_batch)
+    num_clips_tensor = torch.tensor(num_clips_batch, dtype=torch.long)
+    
+    # Pad videos and create masks
+    batch_size = len(videos_batch)
+    # Get video shape from first clip of first action
+    sample_video = videos_batch[0][0]
+    video_shape = sample_video.shape  # (C, T, H, W)
+    
+    # Create padded video tensor
+    padded_videos = torch.zeros(batch_size, max_clips, *video_shape, dtype=sample_video.dtype)
+    clip_masks = torch.zeros(batch_size, max_clips, dtype=torch.bool)
+    
+    for batch_idx, (videos, num_clips) in enumerate(zip(videos_batch, num_clips_batch)):
+        for clip_idx, video in enumerate(videos):
+            padded_videos[batch_idx, clip_idx] = video
+            clip_masks[batch_idx, clip_idx] = True
+    
+    return padded_videos, targets_tensor, clip_masks, num_clips_tensor
+
+
 def create_mvfouls_datasets(
     root_dir: str,
     splits: List[str] = ['train', 'test', 'valid'],
@@ -843,7 +1018,10 @@ def create_mvfouls_datasets(
             dataset = MVFoulsDataset(root_dir, split=split, **kwargs)
             datasets[split] = dataset
             info = dataset.get_split_info()
-            logging.info(f"Created {split} dataset with {len(dataset)} clips ({info['total_actions']} actions)")
+            if dataset.bag_of_clips:
+                logging.info(f"Created {split} dataset with {len(dataset)} actions (bag-of-clips mode)")
+            else:
+                logging.info(f"Created {split} dataset with {len(dataset)} clips ({info['total_actions']} actions)")
         except Exception as e:
             logging.error(f"Error creating {split} dataset: {e}")
     

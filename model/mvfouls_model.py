@@ -89,6 +89,7 @@ class MVFoulsModel(nn.Module):
         # Model configuration
         model_name: str = "MVFoulsModel",
         model_version: str = "1.0",
+        **kwargs
     ):
         """
         Initialize the complete MVFouls model.
@@ -178,7 +179,9 @@ class MVFoulsModel(nn.Module):
                 num_classes_per_task=num_classes_per_task,
                 loss_types_per_task=loss_types_per_task,
                 task_weights=class_weights if isinstance(class_weights, dict) else None,
-                task_loss_weights=task_loss_weights
+                task_loss_weights=task_loss_weights,
+                clip_pooling_type=kwargs.get('clip_pooling_type', 'mean'),
+                clip_pooling_temperature=kwargs.get('clip_pooling_temperature', 1.0)
             )
         else:
             # Single-task mode
@@ -193,7 +196,9 @@ class MVFoulsModel(nn.Module):
                 enable_localizer=head_enable_localizer,
                 gradient_checkpointing=head_gradient_checkpointing,
                 class_weights=class_weights if isinstance(class_weights, torch.Tensor) else None,
-                task_loss_weights=task_loss_weights
+                task_loss_weights=task_loss_weights,
+                clip_pooling_type=kwargs.get('clip_pooling_type', 'mean'),
+                clip_pooling_temperature=kwargs.get('clip_pooling_temperature', 1.0)
             )
         
         # Initialize training state
@@ -206,6 +211,7 @@ class MVFoulsModel(nn.Module):
     def forward(
         self, 
         x: torch.Tensor, 
+        clip_mask: Optional[torch.Tensor] = None,
         return_features: bool = False,
         return_dict: Optional[bool] = None
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], 
@@ -215,7 +221,12 @@ class MVFoulsModel(nn.Module):
         Forward pass through the complete model.
         
         Args:
-            x: Input video tensor of shape (B, 3, T, H, W) or (B, T, H, W, C)
+            x: Input video tensor, supports multiple formats:
+               - (B, 3, T, H, W): Standard single-clip format
+               - (B, T, H, W, C): Standard single-clip format (alternative)
+               - (B, N_clips, 3, T, H, W): Bag-of-clips format
+               - (B, N_clips, T, H, W, C): Bag-of-clips format (alternative)
+            clip_mask: Optional mask for bag-of-clips (B, N_clips) indicating valid clips
             return_features: Whether to return backbone features
             return_dict: Whether to return dict of logits (None = auto-detect from multi_task)
             
@@ -225,18 +236,42 @@ class MVFoulsModel(nn.Module):
             - Multi-task: logits_dict {task: (B, classes)} or (logits_dict, features) if return_features=True
             - With extras: (logits/logits_dict, features, extras_dict)
         """
-        # Handle input format conversion if needed
-        if x.dim() == 5 and x.shape[1] == 3:
-            # Input is (B, C, T, H, W) - standard format
-            pass
-        elif x.dim() == 5 and x.shape[-1] == 3:
-            # Input is (B, T, H, W, C) - convert to (B, C, T, H, W)
-            x = x.permute(0, 4, 1, 2, 3)
+        # Detect bag-of-clips format
+        if x.dim() == 6:  # (B, N_clips, 3, T, H, W) or (B, N_clips, T, H, W, C)
+            batch_size, n_clips = x.shape[:2]
+            
+            if x.shape[2] == 3:
+                # Format: (B, N_clips, 3, T, H, W) - standard bag-of-clips
+                pass
+            elif x.shape[-1] == 3:
+                # Format: (B, N_clips, T, H, W, C) - convert to (B, N_clips, 3, T, H, W)
+                x = x.permute(0, 1, 5, 2, 3, 4)
+            else:
+                raise ValueError(f"Unsupported bag-of-clips format: {x.shape}")
+            
+            # Process each clip through backbone
+            x = x.view(-1, *x.shape[2:])  # (B*N_clips, 3, T, H, W)
+            features = self.backbone(x)  # (B*N_clips, feature_dim) or (B*N_clips, T', H', W', feature_dim)
+            
+            # Reshape back to bag format and pass to head with clip pooling
+            if features.dim() == 2:  # (B*N_clips, feature_dim)
+                features = features.view(batch_size, n_clips, -1)  # (B, N_clips, feature_dim)
+            else:  # (B*N_clips, T', H', W', feature_dim)
+                features = features.view(batch_size, n_clips, *features.shape[1:])  # (B, N_clips, T', H', W', feature_dim)
+            
         else:
-            raise ValueError(f"Unsupported input shape: {x.shape}. Expected (B,C,T,H,W) or (B,T,H,W,C)")
-        
-        # Extract features through backbone
-        features = self.backbone(x)  # (B, feature_dim) or (B, T', H', W', feature_dim)
+            # Handle standard single-clip input format conversion if needed
+            if x.dim() == 5 and x.shape[1] == 3:
+                # Input is (B, C, T, H, W) - standard format
+                pass
+            elif x.dim() == 5 and x.shape[-1] == 3:
+                # Input is (B, T, H, W, C) - convert to (B, C, T, H, W)
+                x = x.permute(0, 4, 1, 2, 3)
+            else:
+                raise ValueError(f"Unsupported input shape: {x.shape}. Expected (B,C,T,H,W), (B,T,H,W,C), or bag-of-clips format")
+            
+            # Extract features through backbone
+            features = self.backbone(x)  # (B, feature_dim) or (B, T', H', W', feature_dim)
         
         # Forward through head
         if return_dict is None:
@@ -244,7 +279,7 @@ class MVFoulsModel(nn.Module):
             
         if return_dict:
             # Multi-task mode
-            logits_dict, extras = self.head.forward_multi(features)
+            logits_dict, extras = self.head.forward(features, clip_mask=clip_mask, return_dict=True)
             
             if return_features:
                 return logits_dict, features, extras
@@ -252,7 +287,7 @@ class MVFoulsModel(nn.Module):
                 return logits_dict, extras
         else:
             # Single-task mode
-            logits, extras = self.head.forward_single(features)
+            logits, extras = self.head.forward(features, clip_mask=clip_mask, return_dict=False)
             
             if return_features:
                 return logits, features, extras
