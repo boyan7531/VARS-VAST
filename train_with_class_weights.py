@@ -310,6 +310,8 @@ def analyze_dataset_imbalance(dataset) -> Dict[str, Dict]:
         base_dataset = dataset.dataset
         subset_indices = dataset.indices
         logger.info(f"🔍 Working with subset of {len(subset_indices)} samples from {len(base_dataset)} total")
+        logger.info(f"🔍 Base dataset has {len(base_dataset.annotations)} annotations")
+        logger.info(f"🔍 Subset indices range: {min(subset_indices)} to {max(subset_indices)}")
     else:
         base_dataset = dataset
         subset_indices = None
@@ -326,11 +328,18 @@ def analyze_dataset_imbalance(dataset) -> Dict[str, Dict]:
         if subset_indices is not None:
             # Recalculate class counts for the subset
             class_counts_dict = {}
+            max_available_idx = len(base_dataset.annotations) - 1
+            
             for idx in subset_indices:
-                annotation = base_dataset.annotations[idx]
-                if task_name in annotation:
-                    class_idx = annotation[task_name]
-                    class_counts_dict[class_idx] = class_counts_dict.get(class_idx, 0) + 1
+                # idx here is the original dataset index from the subset creation
+                if idx <= max_available_idx:
+                    annotation = base_dataset.annotations[idx]
+                    if task_name in annotation:
+                        class_idx = annotation[task_name]
+                        class_counts_dict[class_idx] = class_counts_dict.get(class_idx, 0) + 1
+                else:
+                    logger.warning(f"Subset index {idx} is out of bounds (max: {max_available_idx})")
+                    # This shouldn't happen, but let's handle it gracefully
             
             # Convert to list format expected by the rest of the function
             expected_num_classes = len(metadata['class_names'][task_name])
