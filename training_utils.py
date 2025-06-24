@@ -143,11 +143,16 @@ class MultiTaskTrainer:
             targets = targets.to(self.device)
             
             # For single-task training, extract the main task (offence detection)
-            # Extract offence task (index 2) and convert to binary
-            # 0: Missing/Empty -> 0, 1: Offence -> 1, 2: No offence -> 0
-            if targets.dim() > 1 and targets.size(1) > 2:  # Multi-task format
-                offence_targets = targets[:, 2]  # Shape: [batch_size]
-                targets = (offence_targets == 1).long()  # Convert to binary
+            # Get offence task index from metadata
+            if targets.dim() > 1 and get_task_metadata is not None:
+                metadata = get_task_metadata()
+                task_names = metadata['task_names']
+                if 'offence' in task_names:
+                    offence_idx = task_names.index('offence')
+                    if targets.size(1) > offence_idx:
+                        offence_targets = targets[:, offence_idx]  # Shape: [batch_size]
+                        # Convert offence labels: 0: Missing/Empty -> 0, 1: Offence -> 1, 2: No offence -> 0
+                        targets = (offence_targets == 1).long()  # Convert to binary
             
             targets_dict = targets
         
@@ -178,9 +183,15 @@ class MultiTaskTrainer:
             targets = targets.to(self.device)
             
             # For single-task training, extract the main task (offence detection)
-            if targets.dim() > 1 and targets.size(1) > 2:  # Multi-task format
-                offence_targets = targets[:, 2]  # Shape: [batch_size]
-                targets = (offence_targets == 1).long()  # Convert to binary
+            if targets.dim() > 1 and get_task_metadata is not None:
+                metadata = get_task_metadata()
+                task_names = metadata['task_names']
+                if 'offence' in task_names:
+                    offence_idx = task_names.index('offence')
+                    if targets.size(1) > offence_idx:
+                        offence_targets = targets[:, offence_idx]  # Shape: [batch_size]
+                        # Convert offence labels: 0: Missing/Empty -> 0, 1: Offence -> 1, 2: No offence -> 0
+                        targets = (offence_targets == 1).long()  # Convert to binary
             
             # Compute loss
             loss_dict = self.model.compute_loss(logits, targets, return_dict=True)
@@ -355,9 +366,15 @@ class MultiTaskTrainer:
                     logits, extras = self.model(videos, clip_mask=clip_masks, return_dict=False)
                     targets = targets.to(self.device)
                     
-                    # For single-task training, extract the main task (offence detection)
-                    if targets.dim() > 1 and targets.size(1) > 2:  # Multi-task format
-                        offence_targets = targets[:, 2]  # Shape: [batch_size]
+                                # For single-task training, extract the main task (offence detection)
+            if targets.dim() > 1 and get_task_metadata is not None:
+                metadata = get_task_metadata()
+                task_names = metadata['task_names']
+                if 'offence' in task_names:
+                    offence_idx = task_names.index('offence')
+                    if targets.size(1) > offence_idx:
+                        offence_targets = targets[:, offence_idx]  # Shape: [batch_size]
+                        # Convert offence labels: 0: Missing/Empty -> 0, 1: Offence -> 1, 2: No offence -> 0
                         targets = (offence_targets == 1).long()  # Convert to binary
                     
                     # Compute loss
@@ -389,7 +406,7 @@ class MultiTaskTrainer:
                         combined_targets[task_name].append(batch_targets[task_name])
                     else:
                         # Handle tensor targets (convert to dict format)
-                        combined_targets[task_name].append(batch_targets[:, 0])  # Simplified
+                        combined_targets[task_name].append(batch_targets[:, task_idx] if batch_targets.dim() > 1 else batch_targets)
             
             # Convert to tensors
             for task_name in combined_logits.keys():

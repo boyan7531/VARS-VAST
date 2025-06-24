@@ -452,17 +452,21 @@ class MVFoulsModel(nn.Module):
                 
                 # Handle target format
                 if self.multi_task:
-                    # Expect targets to be (B, N_tasks) - split into dict
                     if not isinstance(targets, dict):
+                        # Convert tensor to dict format
                         targets = targets.to(device)
                         if get_task_metadata is not None:
                             metadata = get_task_metadata()
                             targets_dict = {}
                             for i, task_name in enumerate(metadata['task_names']):
-                                targets_dict[task_name] = targets[:, i]
+                                if i < targets.size(1):
+                                    targets_dict[task_name] = targets[:, i]
+                                else:
+                                    # Fallback for missing task
+                                    targets_dict[task_name] = torch.zeros_like(targets[:, 0])
                         else:
                             # Fallback for single task
-                            targets_dict = {'default': targets[:, 0]}
+                            targets_dict = {'default': targets.flatten() if targets.dim() > 1 else targets}
                     else:
                         targets_dict = {k: v.to(device) for k, v in targets.items()}
                 else:
@@ -597,21 +601,24 @@ class MVFoulsModel(nn.Module):
             # Handle target format (same as evaluate)
             if self.multi_task:
                 if not isinstance(targets, dict):
+                    # Convert tensor to dict format
                     targets = targets.to(device)
                     if get_task_metadata is not None:
                         metadata = get_task_metadata()
                         targets_dict = {}
                         for i, task_name in enumerate(metadata['task_names']):
-                            targets_dict[task_name] = targets[:, i]
+                            if i < targets.size(1):
+                                targets_dict[task_name] = targets[:, i]
+                            else:
+                                # Fallback for missing task
+                                targets_dict[task_name] = torch.zeros_like(targets[:, 0])
                     else:
-                        targets_dict = {'default': targets[:, 0]}
+                        # Fallback for single task
+                        targets_dict = {'default': targets.flatten() if targets.dim() > 1 else targets}
                 else:
                     targets_dict = {k: v.to(device) for k, v in targets.items()}
             else:
-                if isinstance(targets, dict):
-                    targets = torch.cat(list(targets.values()), dim=1)
-                targets = targets.to(device)
-                targets_dict = targets
+                targets_dict = {k: v.to(device) for k, v in targets.items()}
             
             # Forward pass
             if self.multi_task:

@@ -503,11 +503,15 @@ def main():
                 targets = targets.to(device)
                 
                 # For single-task training, extract the main task (offence detection)
-                if not model.multi_task:
-                    # Extract offence task (index 2) and convert to binary
-                    # 0: Missing/Empty -> 0, 1: Offence -> 1, 2: No offence -> 0
-                    offence_targets = targets[:, 2]  # Shape: [batch_size]
-                    targets = (offence_targets == 1).long()  # Convert to binary: 1 if "Offence", 0 otherwise
+                if targets.dim() > 1 and get_task_metadata is not None:
+                    metadata = get_task_metadata()
+                    task_names = metadata['task_names']
+                    if 'offence' in task_names:
+                        offence_idx = task_names.index('offence')
+                        if targets.size(1) > offence_idx:
+                            offence_targets = targets[:, offence_idx]  # Shape: [batch_size]
+                            # Convert offence labels: 0: Missing/Empty -> 0, 1: Offence -> 1, 2: No offence -> 0
+                            targets = (offence_targets == 1).long()  # Convert to binary
                 
                 logger.info(f"✓ Batch shape: videos={videos.shape}, targets shape={targets.shape}")
                 
@@ -542,10 +546,15 @@ def main():
                 targets = targets.to(device)
                 
                 # For single-task training, extract the main task (offence detection)
-                if not model.multi_task:
-                    # Extract offence task (index 2) and convert to binary
-                    offence_targets = targets[:, 2]  # Shape: [batch_size]
-                    targets = (offence_targets == 1).long()  # Convert to binary: 1 if "Offence", 0 otherwise
+                if targets.dim() > 1 and get_task_metadata is not None:
+                    metadata = get_task_metadata()
+                    task_names = metadata['task_names']
+                    if 'offence' in task_names:
+                        offence_idx = task_names.index('offence')
+                        if targets.size(1) > offence_idx:
+                            offence_targets = targets[:, offence_idx]  # Shape: [batch_size]
+                            # Convert offence labels: 0: Missing/Empty -> 0, 1: Offence -> 1, 2: No offence -> 0
+                            targets = (offence_targets == 1).long()  # Convert to binary
                 
                 with torch.no_grad():
                     if model.multi_task:
