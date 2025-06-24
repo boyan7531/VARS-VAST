@@ -461,8 +461,8 @@ def create_balanced_model(
             class_weights=task_weights,
             task_loss_weights=primary_task_weights,
             backbone_checkpointing=backbone_checkpointing,
-            clip_pooling_type=args.clip_pooling_type,
-            clip_pooling_temperature=args.clip_pooling_temperature
+            clip_pooling_type=model_kwargs.get('clip_pooling_type', 'mean'),
+            clip_pooling_temperature=model_kwargs.get('clip_pooling_temperature', 1.0)
         )
         
     else:
@@ -497,8 +497,8 @@ def create_balanced_model(
             head_loss_type='ce',  # Always use CrossEntropy
             class_weights=class_weights,
             backbone_checkpointing=backbone_checkpointing,
-            clip_pooling_type=args.clip_pooling_type,
-            clip_pooling_temperature=args.clip_pooling_temperature,
+            clip_pooling_type=model_kwargs.get('clip_pooling_type', 'mean'),
+            clip_pooling_temperature=model_kwargs.get('clip_pooling_temperature', 1.0),
             **filtered_kwargs
         )
     
