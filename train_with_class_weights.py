@@ -139,21 +139,41 @@ def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule:
             
             logger.info(f"🔄 Reducing batch size from {args.batch_size} to {args.unfreeze_batch_size} for backbone unfreezing")
             
-            # Get original datasets from the trainer's data loaders
+            # Get original datasets and sampler from the trainer's data loaders
             train_dataset = trainer.train_loader.dataset
             val_dataset = trainer.val_loader.dataset
+            
+            # CRITICAL FIX: Preserve the original sampler to maintain balanced sampling
+            original_sampler = trainer.train_loader.sampler
             
             # Create new data loaders with reduced batch size
             from torch.utils.data import DataLoader
             
-            trainer.train_loader = DataLoader(
-                train_dataset, 
-                batch_size=args.unfreeze_batch_size, 
-                shuffle=True, 
-                num_workers=4, 
-                pin_memory=True,
-                drop_last=True
-            )
+            # FIXED: Preserve sampler and set shuffle=False when using custom sampler
+            if original_sampler is not None and hasattr(original_sampler, 'weights'):
+                # We have a WeightedRandomSampler - preserve it
+                trainer.train_loader = DataLoader(
+                    train_dataset, 
+                    batch_size=args.unfreeze_batch_size, 
+                    sampler=original_sampler,  # PRESERVE balanced sampling
+                    shuffle=False,  # Must be False when using custom sampler
+                    num_workers=4, 
+                    pin_memory=True,
+                    drop_last=True
+                )
+                logger.info(f"   ✅ Preserved WeightedRandomSampler for balanced training")
+            else:
+                # No custom sampler, use shuffle
+                trainer.train_loader = DataLoader(
+                    train_dataset, 
+                    batch_size=args.unfreeze_batch_size, 
+                    shuffle=True, 
+                    num_workers=4, 
+                    pin_memory=True,
+                    drop_last=True
+                )
+                logger.info(f"   ⚠️  No custom sampler detected, using shuffle=True")
+            
             trainer.val_loader = DataLoader(
                 val_dataset, 
                 batch_size=args.unfreeze_batch_size, 
@@ -212,6 +232,11 @@ def apply_adaptive_lr_scaling(optimizer, group_name: str, trainable_params: int,
     current_lr = optimizer.param_groups[0]['lr']
     original_lr = current_lr
     
+    # NOTE: The CLI arguments --lr-scale-minor, --lr-scale-major, --lr-scale-massive
+    # are defined but currently not used. The current implementation uses FIXED
+    # conservative scaling values to prevent training instability.
+    # TODO: If you want to use the CLI args, uncomment the code below and comment the fixed values.
+    
     # Determine scaling factor based on unfreezing type
     # FIXED: Use conservative scaling to prevent LR explosions
     scale_factor = 1.0
@@ -221,18 +246,22 @@ def apply_adaptive_lr_scaling(optimizer, group_name: str, trainable_params: int,
         # Keep same LR for initial unfreezing
         scale_factor = 1.0
         category = "MINOR"
+        # Optional: Use CLI arg instead: scale_factor = getattr(args, 'lr_scale_minor', 1.0)
     elif group_name in ['stage_0']:
         # Keep same LR for first stage
         scale_factor = 1.0
         category = "MINOR"
+        # Optional: Use CLI arg instead: scale_factor = getattr(args, 'lr_scale_minor', 1.0)
     elif group_name in ['stage_1']:
         # Reduce LR for medium stages (prevents overfitting newly unfrozen layers)
         scale_factor = 0.5
         category = "MAJOR"
+        # Optional: Use CLI arg instead: scale_factor = getattr(args, 'lr_scale_major', 1.0) * 0.5
     elif group_name in ['stage_2', 'stage_3']:
         # Significantly reduce LR for massive unfreezing (prevents instability)
         scale_factor = 0.25
         category = "MASSIVE"
+        # Optional: Use CLI arg instead: scale_factor = getattr(args, 'lr_scale_massive', 1.0) * 0.25
     else:
         # Unknown group, use conservative scaling
         scale_factor = 0.5
@@ -256,6 +285,8 @@ def apply_adaptive_lr_scaling(optimizer, group_name: str, trainable_params: int,
         logger.info(f"   Backbone LR: {original_lr:.2e} → {new_lr:.2e} (×{scale_factor:.1f})")
         logger.info(f"   Updated groups: {updated_groups}")
         logger.info(f"   Reason: {category} unfreezing - reducing backbone LR for stability")
+        if hasattr(args, 'lr_scale_minor') and (args.lr_scale_minor != 1.2 or args.lr_scale_major != 1.5 or args.lr_scale_massive != 2.0):
+            logger.warning(f"   ⚠️  CLI LR scaling args are set but not used (using fixed conservative values)")
     else:
         logger.info(f"🔧 Adaptive LR Scaling ({category}) - NO CHANGE:")
         logger.info(f"   Unfrozen group: {group_name}")
@@ -446,6 +477,7 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
         # It's a torch.utils.data.Subset
         subset_indices = list(dataset.indices)
         base_dataset = dataset.dataset  # underlying MVFoulsDataset
+        print(f"🔍 Detected Subset dataset: {len(subset_indices)} samples from {len(base_dataset)} total")
     else:
         base_dataset = dataset
     
@@ -456,18 +488,32 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
     # Build joint_labels list
     joint_labels = []
     
-    # Iterate over relevant indices
-    indices_iter = subset_indices if subset_indices is not None else range(len(base_dataset.annotations))
-    for idx in indices_iter:
-        annotation = base_dataset.annotations[idx]
-        joint_key = []
-        for task_name in task_names:
-            joint_key.append(annotation.get(task_name, 0))
-        joint_labels.append(tuple(joint_key))
+    # FIXED: Handle subset indices correctly
+    if subset_indices is not None:
+        # For subsets, only process the subset indices
+        for subset_idx, original_idx in enumerate(subset_indices):
+            annotation = base_dataset.annotations[original_idx]
+            joint_key = []
+            for task_name in task_names:
+                joint_key.append(annotation.get(task_name, 0))
+            joint_labels.append(tuple(joint_key))
+    else:
+        # For full datasets, process all annotations
+        for idx in range(len(base_dataset.annotations)):
+            annotation = base_dataset.annotations[idx]
+            joint_key = []
+            for task_name in task_names:
+                joint_key.append(annotation.get(task_name, 0))
+            joint_labels.append(tuple(joint_key))
     
     # Count frequencies etc.
     class_counts = Counter(joint_labels)
     num_samples = len(joint_labels)
+    
+    # VALIDATION: Ensure sample count matches dataset size
+    expected_size = len(subset_indices) if subset_indices is not None else len(base_dataset)
+    if num_samples != expected_size:
+        raise ValueError(f"Sample count mismatch: got {num_samples}, expected {expected_size}")
     
     # Log joint class distribution for multi-task sampling
     if len(task_names) > 1:
@@ -488,8 +534,14 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
     # Compute weights: inverse frequency for joint classes
     class_weights = {cls: num_samples / count for cls, count in class_counts.items()}
     
-    # Create sample weights
+    # Create sample weights - FIXED: length must match dataset size exactly
     sample_weights = [class_weights[label] for label in joint_labels]
+    
+    # VALIDATION: Ensure weights list matches dataset size
+    if len(sample_weights) != expected_size:
+        raise ValueError(f"Sample weights length mismatch: got {len(sample_weights)}, expected {expected_size}")
+    
+    print(f"✅ Created balanced sampler: {num_samples} samples, {len(class_counts)} unique classes")
     
     return WeightedRandomSampler(
         weights=sample_weights,
