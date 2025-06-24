@@ -388,6 +388,7 @@ def create_balanced_model(
             backbone_freeze_mode='gradual',
             loss_types_per_task=loss_types_per_task,
             class_weights=task_weights,
+            task_loss_weights=primary_task_weights,
             backbone_checkpointing=backbone_checkpointing
         )
         
