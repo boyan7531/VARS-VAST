@@ -528,23 +528,42 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
     # Build joint_labels list
     joint_labels = []
     
-    # FIXED: Handle subset indices correctly
+    # FIXED: Handle subset indices correctly using dataset_index
     if subset_indices is not None:
-        # For subsets, only process the subset indices
-        for subset_idx, original_idx in enumerate(subset_indices):
-            annotation = base_dataset.annotations[original_idx]
-            joint_key = []
-            for task_name in task_names:
-                joint_key.append(annotation.get(task_name, 0))
-            joint_labels.append(tuple(joint_key))
+        # For subsets, process clips via dataset_index
+        for idx in subset_indices:
+            if idx < len(base_dataset.dataset_index):
+                clip_info = base_dataset.dataset_index[idx]
+                if clip_info.numeric_labels is not None:
+                    joint_key = []
+                    # Get the task indices for the requested tasks
+                    from utils import get_task_metadata
+                    metadata = get_task_metadata()
+                    task_names_list = metadata['task_names']
+                    
+                    for task_name in task_names:
+                        if task_name in task_names_list:
+                            task_idx = task_names_list.index(task_name)
+                            joint_key.append(clip_info.numeric_labels[task_idx].item())
+                        else:
+                            joint_key.append(0)  # Default value
+                    joint_labels.append(tuple(joint_key))
     else:
-        # For full datasets, process all annotations
-        for idx in range(len(base_dataset.annotations)):
-            annotation = base_dataset.annotations[idx]
-            joint_key = []
-            for task_name in task_names:
-                joint_key.append(annotation.get(task_name, 0))
-            joint_labels.append(tuple(joint_key))
+        # For full datasets, process all clips via dataset_index
+        for clip_info in base_dataset.dataset_index:
+            if clip_info.numeric_labels is not None:
+                joint_key = []
+                from utils import get_task_metadata
+                metadata = get_task_metadata()
+                task_names_list = metadata['task_names']
+                
+                for task_name in task_names:
+                    if task_name in task_names_list:
+                        task_idx = task_names_list.index(task_name)
+                        joint_key.append(clip_info.numeric_labels[task_idx].item())
+                    else:
+                        joint_key.append(0)  # Default value
+                joint_labels.append(tuple(joint_key))
     
     # Count frequencies etc.
     class_counts = Counter(joint_labels)
