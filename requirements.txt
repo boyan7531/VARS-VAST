@@ -32,14 +32,9 @@ PyYAML>=6.0
 
 # Additional libraries for training pipeline
 pathlib2>=2.3.0  # Enhanced pathlib functionality
-argparse  # Built-in, but explicit for clarity
-json  # Built-in, but explicit for clarity
-logging  # Built-in, but explicit for clarity
-typing  # Built-in, but explicit for clarity
-contextlib  # Built-in, but explicit for clarity
-collections  # Built-in, but explicit for clarity
-subprocess  # Built-in, but explicit for clarity
-sys  # Built-in, but explicit for clarity
+
+# Note: The following are built-in Python modules and don't need installation:
+# argparse, json, logging, typing, contextlib, collections, subprocess, sys
 
 # Mixed precision training
 # Automatic Mixed Precision is included in torch>=1.6.0
