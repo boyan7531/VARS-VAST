@@ -98,7 +98,20 @@ def predict_batch(model: MVFoulsModel, videos: torch.Tensor, device: torch.devic
         
         # Convert logits to probabilities
         predictions = {}
-        for task_name, logits in outputs.items():
+        for task_name, task_output in outputs.items():
+            # Handle nested dict structure (e.g., {'logits': tensor, 'loss': tensor})
+            if isinstance(task_output, dict):
+                if 'logits' in task_output:
+                    logits = task_output['logits']
+                elif 'predictions' in task_output:
+                    logits = task_output['predictions']
+                else:
+                    # Take the first tensor value if no standard key found
+                    logits = next(v for v in task_output.values() if isinstance(v, torch.Tensor))
+            else:
+                # Direct tensor output
+                logits = task_output
+            
             probabilities = F.softmax(logits, dim=1)
             predictions[task_name] = probabilities
     
