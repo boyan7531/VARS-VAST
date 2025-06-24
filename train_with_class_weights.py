@@ -295,7 +295,7 @@ def apply_adaptive_lr_scaling(optimizer, group_name: str, trainable_params: int,
         logger.info(f"   Reason: Conservative scaling - no LR increase")
 
 
-def analyze_dataset_imbalance(dataset: MVFoulsDataset) -> Dict[str, Dict]:
+def analyze_dataset_imbalance(dataset) -> Dict[str, Dict]:
     """
     Analyze class imbalance in the dataset for Option A approach.
     SIMPLIFIED: Just provides class counts and imbalance ratios.
@@ -304,8 +304,18 @@ def analyze_dataset_imbalance(dataset: MVFoulsDataset) -> Dict[str, Dict]:
     
     logger.info("🔍 Analyzing dataset class imbalance (Option A: Simple Analysis)...")
     
-    # Get dataset statistics
-    stats = dataset.get_task_statistics()
+    # Handle Subset objects (when using train_fraction < 1.0)
+    if hasattr(dataset, 'dataset') and hasattr(dataset, 'indices'):
+        # This is a Subset object, get the underlying dataset
+        base_dataset = dataset.dataset
+        subset_indices = dataset.indices
+        logger.info(f"🔍 Working with subset of {len(subset_indices)} samples from {len(base_dataset)} total")
+    else:
+        base_dataset = dataset
+        subset_indices = None
+    
+    # Get dataset statistics from the base dataset
+    stats = base_dataset.get_task_statistics()
     
     # Get task metadata for expected number of classes
     metadata = get_task_metadata()
@@ -313,15 +323,31 @@ def analyze_dataset_imbalance(dataset: MVFoulsDataset) -> Dict[str, Dict]:
     analysis_results = {}
     
     for task_name, task_stats in stats.items():
-        class_counts = task_stats['class_counts']
-        expected_num_classes = len(metadata['class_names'][task_name])
-        
-        # Ensure class_counts has the right length (pad with zeros if needed)
-        if len(class_counts) < expected_num_classes:
-            class_counts = class_counts + [0] * (expected_num_classes - len(class_counts))
-        elif len(class_counts) > expected_num_classes:
-            # This shouldn't happen, but just in case
-            class_counts = class_counts[:expected_num_classes]
+        if subset_indices is not None:
+            # Recalculate class counts for the subset
+            class_counts_dict = {}
+            for idx in subset_indices:
+                annotation = base_dataset.annotations[idx]
+                if task_name in annotation:
+                    class_idx = annotation[task_name]
+                    class_counts_dict[class_idx] = class_counts_dict.get(class_idx, 0) + 1
+            
+            # Convert to list format expected by the rest of the function
+            expected_num_classes = len(metadata['class_names'][task_name])
+            class_counts = [0] * expected_num_classes
+            for class_idx, count in class_counts_dict.items():
+                if 0 <= class_idx < expected_num_classes:
+                    class_counts[class_idx] = count
+        else:
+            class_counts = task_stats['class_counts']
+            expected_num_classes = len(metadata['class_names'][task_name])
+            
+            # Ensure class_counts has the right length (pad with zeros if needed)
+            if len(class_counts) < expected_num_classes:
+                class_counts = class_counts + [0] * (expected_num_classes - len(class_counts))
+            elif len(class_counts) > expected_num_classes:
+                # This shouldn't happen, but just in case
+                class_counts = class_counts[:expected_num_classes]
             
         total_samples = sum(class_counts)
         
