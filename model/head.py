@@ -126,11 +126,22 @@ class MVFoulsHead(nn.Module):
         num_classes_per_task: Optional[List[int]] = None,
         loss_types_per_task: Optional[List[str]] = None,
         task_weights: Optional[Dict[str, torch.Tensor]] = None,
-        task_loss_weights: Optional[Dict[str, float]] = None
+        task_loss_weights: Optional[Dict[str, float]] = None,
+        # Enhanced head parameters
+        hidden_dim: int = 2048,  # Intermediate layer size
+        num_shared_layers: int = 2,  # Number of shared layers before task-specific heads
+        task_specific_layers: int = 1,  # Number of task-specific layers
+        use_batch_norm: bool = True,  # Use batch normalization
+        activation: str = 'relu'  # Activation function
     ):
         super().__init__()
         
         self.in_dim = in_dim
+        self.hidden_dim = hidden_dim
+        self.num_shared_layers = num_shared_layers
+        self.task_specific_layers = task_specific_layers
+        self.use_batch_norm = use_batch_norm
+        self.activation = activation
         self.dropout_p = dropout
         self.pooling_type = pooling
         self.temporal_module_type = temporal_module
@@ -185,17 +196,11 @@ class MVFoulsHead(nn.Module):
         # Determine classifier input dimension
         classifier_dim = self._get_classifier_dim()
         
-        # Build classifiers (single or multi-task)
-        if self.multi_task:
-            self.task_heads = nn.ModuleDict()
-            for task_name, num_cls in zip(self.task_names, self.num_classes_per_task):
-                self.task_heads[task_name] = nn.Linear(classifier_dim, num_cls)
-            # Keep single classifier for backward compatibility (will be deprecated)
-            self.classifier = nn.Linear(classifier_dim, self.num_classes)
+        # Build enhanced architecture
+        if self.multi_task and len(self.task_names) > 1:
+            self._build_enhanced_multi_task_head(classifier_dim)
         else:
-            self.classifier = nn.Linear(classifier_dim, self.num_classes)
-            # For consistency, also create task_heads for single task
-            self.task_heads = nn.ModuleDict({'default': self.classifier})
+            self._build_simple_single_task_head(classifier_dim)
         
         # Build optional localizer
         self.localizer = None
@@ -233,6 +238,105 @@ class MVFoulsHead(nn.Module):
         
         # Apply freeze mode
         self._apply_freeze_mode()
+    
+    def _build_enhanced_multi_task_head(self, classifier_dim: int):
+        """Build enhanced multi-task head with shared and task-specific layers."""
+        
+        # Activation function
+        if self.activation == 'relu':
+            act_fn = nn.ReLU(inplace=True)
+        elif self.activation == 'gelu':
+            act_fn = nn.GELU()
+        elif self.activation == 'swish':
+            act_fn = nn.SiLU()
+        else:
+            act_fn = nn.ReLU(inplace=True)
+        
+        # Shared feature extraction layers
+        shared_layers = []
+        current_dim = classifier_dim
+        
+        for i in range(self.num_shared_layers):
+            # Determine output dimension for this layer
+            if i == self.num_shared_layers - 1:
+                # Last shared layer goes to hidden_dim
+                out_dim = self.hidden_dim
+            else:
+                # Intermediate layers gradually increase dimension
+                out_dim = classifier_dim + (self.hidden_dim - classifier_dim) * (i + 1) // self.num_shared_layers
+            
+            # Linear layer
+            shared_layers.append(nn.Linear(current_dim, out_dim))
+            
+            # Batch normalization
+            if self.use_batch_norm:
+                shared_layers.append(nn.BatchNorm1d(out_dim))
+            
+            # Activation
+            shared_layers.append(act_fn)
+            
+            # Dropout
+            if self.dropout_p is not None and self.dropout_p > 0:
+                shared_layers.append(nn.Dropout(self.dropout_p))
+            
+            current_dim = out_dim
+        
+        self.shared_layers = nn.Sequential(*shared_layers)
+        
+        # Task-specific heads
+        self.task_heads = nn.ModuleDict()
+        for task_name, num_cls in zip(self.task_names, self.num_classes_per_task):
+            task_layers = []
+            task_current_dim = self.hidden_dim
+            
+            # Task-specific intermediate layers
+            for i in range(self.task_specific_layers):
+                if i == self.task_specific_layers - 1:
+                    # Last layer goes to task's number of classes
+                    out_dim = num_cls
+                else:
+                    # Intermediate task-specific layers
+                    out_dim = self.hidden_dim // 2
+                
+                task_layers.append(nn.Linear(task_current_dim, out_dim))
+                
+                # Only add activation/dropout for intermediate layers, not final layer
+                if i < self.task_specific_layers - 1:
+                    if self.use_batch_norm:
+                        task_layers.append(nn.BatchNorm1d(out_dim))
+                    task_layers.append(act_fn)
+                    if self.dropout_p is not None and self.dropout_p > 0:
+                        task_layers.append(nn.Dropout(self.dropout_p))
+                
+                task_current_dim = out_dim
+            
+            self.task_heads[task_name] = nn.Sequential(*task_layers)
+        
+        # Keep single classifier for backward compatibility (will be deprecated)
+        self.classifier = nn.Linear(self.hidden_dim, self.num_classes)
+    
+    def _build_simple_single_task_head(self, classifier_dim: int):
+        """Build simple single-task head (backward compatibility)."""
+        # Build single classifier
+        if self.hidden_dim > classifier_dim and self.num_shared_layers > 0:
+            # Use enhanced architecture even for single task
+            shared_layers = []
+            shared_layers.append(nn.Linear(classifier_dim, self.hidden_dim))
+            if self.use_batch_norm:
+                shared_layers.append(nn.BatchNorm1d(self.hidden_dim))
+            shared_layers.append(nn.ReLU(inplace=True))
+            if self.dropout_p is not None and self.dropout_p > 0:
+                shared_layers.append(nn.Dropout(self.dropout_p))
+            
+            self.shared_layers = nn.Sequential(*shared_layers)
+            self.classifier = nn.Linear(self.hidden_dim, self.num_classes)
+        else:
+            # Simple single layer
+            self.shared_layers = nn.Identity()
+            self.classifier = nn.Linear(classifier_dim, self.num_classes)
+        
+        # For consistency, also create task_heads for single task
+        self.task_heads = nn.ModuleDict({'default': self.classifier})
     
     def _build_pooling_module(self) -> Optional[nn.Module]:
         """Build the pooling module based on pooling_type."""
@@ -362,12 +466,12 @@ class MVFoulsHead(nn.Module):
             else:
                 x = x.mean(dim=1)  # Average over temporal dimension
         
-        # Store features before classification
+        # Store features before shared layers
         extras['feat'] = x
         
-        # Apply dropout
-        if self.dropout_p is not None and self.dropout_p > 0:
-            x = F.dropout(x, p=self.dropout_p, training=self.training)
+        # Pass through shared layers (if any)
+        if hasattr(self, 'shared_layers'):
+            x = self.shared_layers(x)
         
         # Classification
         if return_dict:
@@ -920,12 +1024,19 @@ def build_multi_task_head(**kwargs) -> MVFoulsHead:
     # Get task metadata
     metadata = get_task_metadata()
     
-    # Set multi-task defaults
+    # Set multi-task defaults with enhanced architecture
     defaults = {
         'multi_task': True,
         'task_names': metadata['task_names'],
         'num_classes_per_task': metadata['num_classes'],
         'loss_type': 'focal',  # Default loss type
+        # Enhanced head architecture for better multi-task learning
+        'hidden_dim': 2048,  # Large intermediate layer
+        'num_shared_layers': 2,  # Shared feature extraction
+        'task_specific_layers': 1,  # Task-specific processing
+        'use_batch_norm': True,  # Normalization for stability
+        'activation': 'relu',  # Activation function
+        'dropout': 0.3,  # Regularization
     }
     
     # Override with user-provided kwargs
