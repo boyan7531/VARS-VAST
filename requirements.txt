@@ -1,22 +1,55 @@
+# Core deep learning libraries
 torch>=2.0.0
 torchvision>=0.15.0
+
+# Computer vision and video processing
 opencv-python>=4.5.0
-numpy>=1.21.0
-tqdm>=4.64.0
 Pillow>=8.3.0
+decord>=0.6.0
+av>=9.0.0
+
+# Numerical computing and data manipulation
+numpy>=1.21.0
+pandas>=1.3.0
+
+# Machine learning utilities
+scikit-learn>=1.0.0
 timm>=0.9.0
 transformers>=4.20.0
-pandas>=1.3.0
-scikit-learn>=1.0.0
+
+# Progress bars and logging
+tqdm>=4.64.0
+
+# Visualization and monitoring
 matplotlib>=3.4.0
 seaborn>=0.12.0
+tensorboard>=2.10.0
+
+# Configuration and data formats
 PyYAML>=6.0
 
-# Optional fast video loading dependencies
-# Install with: pip install decord
-decord>=0.6.0
-
-# Alternative: Install with: pip install av
-av>=9.0.0
-tensorboard>=2.10.0
+# Dataset and evaluation
 SoccerNet>=1.0.0
+
+# Additional libraries for training pipeline
+pathlib2>=2.3.0  # Enhanced pathlib functionality
+argparse  # Built-in, but explicit for clarity
+json  # Built-in, but explicit for clarity
+logging  # Built-in, but explicit for clarity
+typing  # Built-in, but explicit for clarity
+contextlib  # Built-in, but explicit for clarity
+collections  # Built-in, but explicit for clarity
+subprocess  # Built-in, but explicit for clarity
+sys  # Built-in, but explicit for clarity
+
+# Mixed precision training
+# Automatic Mixed Precision is included in torch>=1.6.0
+
+# Optional: For enhanced performance
+# psutil>=5.8.0  # System monitoring
+# memory_profiler>=0.60.0  # Memory usage profiling
+
+# Development and testing (optional)
+# pytest>=6.0.0
+# black>=22.0.0
+# flake8>=4.0.0
