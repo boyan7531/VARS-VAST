@@ -328,18 +328,23 @@ def analyze_dataset_imbalance(dataset) -> Dict[str, Dict]:
         if subset_indices is not None:
             # Recalculate class counts for the subset
             class_counts_dict = {}
-            max_available_idx = len(base_dataset.annotations) - 1
+            valid_indices = 0
             
             for idx in subset_indices:
-                # idx here is the original dataset index from the subset creation
-                if idx <= max_available_idx:
-                    annotation = base_dataset.annotations[idx]
-                    if task_name in annotation:
-                        class_idx = annotation[task_name]
-                        class_counts_dict[class_idx] = class_counts_dict.get(class_idx, 0) + 1
-                else:
-                    logger.warning(f"Subset index {idx} is out of bounds (max: {max_available_idx})")
-                    # This shouldn't happen, but let's handle it gracefully
+                # idx is a clip index into the dataset_index
+                if idx < len(base_dataset.dataset_index):
+                    clip_info = base_dataset.dataset_index[idx]
+                    if clip_info.numeric_labels is not None:
+                        valid_indices += 1
+                        # Get the task index to extract the label for this task
+                        task_names_list = list(stats.keys())
+                        if task_name in task_names_list:
+                            task_idx = task_names_list.index(task_name)
+                            class_idx = clip_info.numeric_labels[task_idx].item()
+                            class_counts_dict[class_idx] = class_counts_dict.get(class_idx, 0) + 1
+            
+            if task_name == list(stats.keys())[0]:  # Only log once for the first task
+                logger.info(f"🔍 Found valid annotations for {valid_indices}/{len(subset_indices)} subset clips")
             
             # Convert to list format expected by the rest of the function
             expected_num_classes = len(metadata['class_names'][task_name])
