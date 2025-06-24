@@ -644,8 +644,10 @@ def main():
                        help='Custom unfreeze schedule as JSON (e.g., {"3": "patch_embed", "6": "stage_0"})')
     parser.add_argument('--reduce-batch-on-unfreeze', action='store_true',
                        help='Automatically reduce batch size when unfreezing backbone')
-    parser.add_argument('--unfreeze-batch-size', type=int, default=4,
-                       help='Batch size to use after unfreezing (default: 4)')
+    parser.add_argument('--unfreeze-batch-size', type=int, default=3,
+                       help='Batch size to use after backbone unfreezing starts (default: 3)')
+    parser.add_argument('--gradient-accumulation-steps', type=int, default=1,
+                        help='Number of steps to accumulate gradients before optimizer step (default: 1)')
     
     # Other arguments
     parser.add_argument('--output-dir', type=str, default='./outputs_balanced', help='Output directory')
@@ -927,7 +929,7 @@ def main():
             device=device,
             log_interval=50,
             eval_interval=1,
-            gradient_accumulation_steps=1,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
             max_grad_norm=1.0,
             primary_task_weights=primary_task_weights
         )
