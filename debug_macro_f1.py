@@ -108,7 +108,9 @@ def debug_model_on_validation():
         num_classes=metadata['num_classes'],
         multi_task=True,
         task_names=metadata['task_names'],
-        pretrained=False  # Don't load pretrained weights since we're loading our checkpoint
+        pretrained=False,  # Don't load pretrained weights since we're loading our checkpoint
+        clip_pooling_type='mean',  # Match training config
+        clip_pooling_temperature=1.0
     )
     
     # Load checkpoint
@@ -143,10 +145,17 @@ def debug_model_on_validation():
         for i in range(min(batch_size, len(val_dataset))):
             videos, targets = val_dataset[i]
             
-            # Add batch dimension and move to device
-            videos = videos.unsqueeze(0).to(device)
+            # Handle bag-of-clips format
+            if isinstance(videos, list):
+                # Convert list of video tensors to batch tensor
+                videos = torch.stack(videos, dim=0)  # Shape: [num_clips, C, T, H, W]
+                videos = videos.unsqueeze(0)  # Add batch dimension: [1, num_clips, C, T, H, W]
+            else:
+                videos = videos.unsqueeze(0)  # Add batch dimension
             
-            # Forward pass
+            videos = videos.to(device)
+            
+            # Forward pass (bag-of-clips mode)
             logits_dict, _ = model(videos, return_dict=True)
             
             # Store results
