@@ -348,9 +348,11 @@ class MVFoulsHead(nn.Module):
             # Linear layer
             shared_layers.append(nn.Linear(current_dim, out_dim))
             
-            # Batch normalization
+            # Batch normalization - use GroupNorm for batch_size=1 compatibility
             if self.use_batch_norm:
-                shared_layers.append(nn.BatchNorm1d(out_dim))
+                # Use GroupNorm instead of BatchNorm to handle batch_size=1
+                num_groups = min(32, max(1, out_dim // 16))
+                shared_layers.append(nn.GroupNorm(num_groups, out_dim))
             
             # Activation
             shared_layers.append(act_fn)
@@ -383,7 +385,9 @@ class MVFoulsHead(nn.Module):
                 # Only add activation/dropout for intermediate layers, not final layer
                 if i < self.task_specific_layers - 1:
                     if self.use_batch_norm:
-                        task_layers.append(nn.BatchNorm1d(out_dim))
+                        # Use GroupNorm instead of BatchNorm to handle batch_size=1
+                        num_groups = min(32, max(1, out_dim // 16))
+                        task_layers.append(nn.GroupNorm(num_groups, out_dim))
                     task_layers.append(act_fn)
                     if self.dropout_p is not None and self.dropout_p > 0:
                         task_layers.append(nn.Dropout(self.dropout_p))
