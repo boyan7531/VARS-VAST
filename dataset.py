@@ -273,8 +273,17 @@ class MVFoulsDataset(Dataset):
             self.root_dir = Path(root_dir)
             self.load_annotations = load_annotations and split != 'challenge'
             
-            # Set split directory
-            self.split_dir = self.root_dir / f"{split}_720p"
+            # Set split directory - try with and without _720p suffix
+            split_dir_720p = self.root_dir / f"{split}_720p"
+            split_dir_standard = self.root_dir / split
+            
+            if split_dir_720p.exists():
+                self.split_dir = split_dir_720p
+            elif split_dir_standard.exists():
+                self.split_dir = split_dir_standard
+            else:
+                # Default to the _720p version for error message consistency
+                self.split_dir = split_dir_720p
             
             if not self.split_dir.exists():
                 raise ValueError(f"Split directory {self.split_dir} does not exist")
