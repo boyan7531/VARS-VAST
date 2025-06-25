@@ -399,7 +399,6 @@ def analyze_dataset_imbalance(dataset) -> Dict[str, Dict]:
 
 def create_balanced_model(
     multi_task: bool = True,
-    task_names: Optional[List[str]] = None,
     imbalance_analysis: Optional[Dict] = None,
     primary_task_weights: Optional[Dict[str, float]] = None,
     backbone_checkpointing: bool = True,
@@ -410,130 +409,140 @@ def create_balanced_model(
     **model_kwargs
 ) -> MVFoulsModel:
     """
-    Creates a balanced MVFouls model with proper class weighting and loss configuration.
-
-    Args:
-        multi_task: Whether to build a multi-task model.
-        task_names: Optional list of task names to build the model for. If provided,
-                    it overrides the tasks from imbalance_analysis.
-        imbalance_analysis: Analysis of dataset class distribution.
-        primary_task_weights: Weights for combining task losses.
-        backbone_checkpointing: Whether to enable gradient checkpointing.
-        use_class_weights: Whether to use class weights.
-        class_weight_cap: Maximum class weight multiplier to prevent extreme weights.
-        loss_types_per_task: Per-task loss types.
-        use_effective_weights: Whether to use effective number of samples for weighting.
-        model_kwargs: Additional arguments for the model head.
-
-    Returns:
-        An MVFoulsModel instance.
+    Create a model with Option A: WeightedRandomSampler + Cross-Entropy.
+    SIMPLIFIED: Uses only CrossEntropy loss with optional simple class weights.
     """
     logger = logging.getLogger(__name__)
-
+    
     if multi_task:
-        # Get all possible task names from metadata
-        all_task_names = get_task_metadata().get('task_names', [])
-
-        # If a specific list of task_names is not provided, default to all tasks
-        if task_names is None:
-            task_names = all_task_names
-            logger.info(f"No specific tasks provided; building model for all tasks: {task_names}")
-        else:
-            logger.info(f"Building model for specified tasks: {task_names}")
-
-        # Filter imbalance analysis to only include the specified tasks
-        if imbalance_analysis:
-            imbalance_analysis = {k: v for k, v in imbalance_analysis.items() if k in task_names}
-        else:
-            logger.warning("Imbalance analysis not provided. Using default metadata for selected tasks.")
-            imbalance_analysis = {
-                task: {'num_classes': get_task_metadata()['num_classes'][all_task_names.index(task)]}
-                for task in task_names if task in all_task_names
+        # Get task metadata
+        metadata = get_task_metadata()
+        task_names = metadata['task_names']
+        
+        # VALIDATION: Ensure we only have the expected 3 tasks
+        expected_tasks = ['action_class', 'severity', 'offence']
+        if set(task_names) != set(expected_tasks):
+            logger.error(f"❌ Unexpected tasks found!")
+            logger.error(f"   Expected: {expected_tasks}")
+            logger.error(f"   Found: {task_names}")
+            raise ValueError(f"Dataset must contain exactly these 3 tasks: {expected_tasks}")
+        
+        logger.info(f"✅ Validated dataset contains exactly 3 expected tasks: {task_names}")
+        
+        # Prepare task-specific configurations with flexible loss types
+        task_weights = {}
+        loss_types_list = []
+        
+        # Default loss configuration if not provided
+        if loss_types_per_task is None:
+            loss_types_per_task = {
+                'action_class': 'ce', 
+                'severity': 'focal', 
+                'offence': 'ce'
             }
         
-        # Ensure the task order is consistent
-        final_task_names = [task for task in task_names if task in imbalance_analysis]
-        if len(final_task_names) != len(task_names):
-            logger.warning("Some specified tasks were not found in imbalance analysis and will be skipped.")
+        for task_name in task_names:
+            # Get loss type for this task
+            loss_type = loss_types_per_task.get(task_name, 'ce')
+            loss_types_list.append(loss_type)
+            
+            # Optional: Add class weights (method depends on use_effective_weights flag)
+            if use_class_weights and imbalance_analysis and task_name in imbalance_analysis:
+                analysis = imbalance_analysis[task_name]
+                class_counts = analysis['class_counts']
+                
+                # Choose weighting method
+                if use_effective_weights:
+                    # Use effective number method for extreme imbalance
+                    method = 'effective'
+                else:
+                    # Use simple balanced method
+                    method = 'balanced'
+                
+                # Compute class weights using the selected method
+                if sum(class_counts) > 0:
+                    weights = compute_class_weights(
+                        # Create dummy labels based on counts for weight computation
+                        labels=np.repeat(np.arange(len(class_counts)), class_counts),
+                        method=method,
+                        num_classes=len(class_counts)
+                    )
+                    
+                    # Apply cap to prevent extreme weights
+                    if class_weight_cap > 0:
+                        weights = torch.clamp(weights, max=class_weight_cap)
+                    
+                    # Normalize weights to have mean of 1.0
+                    weights = weights / weights.mean()
+                    task_weights[task_name] = weights
+                    
+                    logger.info(f"🎯 {task_name}: {loss_type.upper()} loss, "
+                              f"{method} class weights: {weights.tolist()}")
+                else:
+                    logger.info(f"🎯 {task_name}: {loss_type.upper()} loss, no weights")
+            else:
+                logger.info(f"🎯 {task_name}: {loss_type.upper()} loss, no weights")
         
-        num_classes_list = [imbalance_analysis[task]['num_classes'] for task in final_task_names]
-        
-        # Compute class weights if enabled
-        class_weights = None
-        if use_class_weights:
-            class_weights = {}
-            for task in final_task_names:
-                task_info = imbalance_analysis[task]
-                weights = compute_class_weights(
-                    class_counts=task_info.get('class_counts'),
-                    num_classes=task_info['num_classes'],
-                    strategy='inverse_capped',
-                    cap=class_weight_cap,
-                    effective_num_beta=0.999 if use_effective_weights else None
-                )
-                class_weights[task] = torch.tensor(weights, dtype=torch.float32)
-                logger.info(f"Computed class weights for task '{task}': {weights.tolist()}")
-    else:
-        # Logic for single-task model remains unchanged
-        # ... (assuming single-task logic doesn't need task_name filtering)
-        logger.info("Building single-task model...")
-        task_names = list(imbalance_analysis.keys())
-        if len(task_names) > 1:
-            logger.warning(f"Multiple tasks found in imbalance analysis for single-task mode. Using first task: {task_names[0]}")
-        task_name = task_names[0]
-        
-        num_classes = imbalance_analysis[task_name]['num_classes']
-        class_counts = imbalance_analysis[task_name].get('class_counts')
-        
-        class_weights_tensor = None
-        if use_class_weights:
-            weights = compute_class_weights(
-                class_counts=class_counts,
-                num_classes=num_classes,
-                strategy='inverse_capped',
-                cap=class_weight_cap,
-                effective_num_beta=0.999 if use_effective_weights else None
-            )
-            class_weights_tensor = torch.tensor(weights, dtype=torch.float32)
-
-    # Determine loss types for each task
-    final_loss_types = {}
-    if multi_task:
-        base_loss_types = loss_types_per_task or {}
-        for task in final_task_names:
-            final_loss_types[task] = base_loss_types.get(task, 'ce') # Default to 'ce'
-    elif not multi_task:
-        task_name = task_names[0]
-        final_loss_types[task_name] = (loss_types_per_task or {}).get(task_name, 'ce')
-
-    logger.info(f"Using loss types: {final_loss_types}")
-
-    # Build the model
-    if multi_task:
-        logger.info("Building multi-task model...")
+        # Create multi-task model with flexible loss configuration
         model = build_multi_task_model(
-            task_names=final_task_names,
-            num_classes_per_task=num_classes_list,
-            task_weights=class_weights,
-            loss_types_per_task=list(final_loss_types.values()),
+            backbone_pretrained=True,
+            backbone_freeze_mode='gradual',
+            loss_types_per_task=loss_types_list,  # Pass the list format expected by model
+            class_weights=task_weights,
             task_loss_weights=primary_task_weights,
-            gradient_checkpointing=backbone_checkpointing,
-            **model_kwargs
+            backbone_checkpointing=backbone_checkpointing,
+            clip_pooling_type=model_kwargs.get('clip_pooling_type', 'mean'),
+            clip_pooling_temperature=model_kwargs.get('clip_pooling_temperature', 1.0)
         )
+        
+        # Add summary of what the model will predict
+        logger.info("🎯 MODEL WILL PREDICT EXACTLY 3 TASKS:")
+        for task_name, num_classes in zip(metadata['task_names'], metadata['num_classes']):
+            logger.info(f"   📋 {task_name}: {num_classes} classes")
+            if task_name == 'action_class':
+                logger.info(f"      Classes: Standing tackling, Tackling, Challenge, Holding, Elbowing, etc.")
+            elif task_name == 'severity':
+                logger.info(f"      Classes: Missing, 1, 2, 3, 4, 5") 
+            elif task_name == 'offence':
+                logger.info(f"      Classes: Missing/Empty, Offence, No offence, Between")
+        
     else:
-        logger.info(f"Building single-task model for '{task_name}'...")
+        # Single-task model with simple class weights
+        class_weights = None
+        if use_class_weights and imbalance_analysis and 'offence' in imbalance_analysis:
+            analysis = imbalance_analysis['offence']
+            class_counts = analysis['class_counts']
+            total_samples = sum(class_counts)
+            
+            if total_samples > 0:
+                weights = []
+                for count in class_counts:
+                    if count > 0:
+                        weight = min(total_samples / count, class_weight_cap)
+                    else:
+                        weight = 1.0
+                    weights.append(weight)
+                
+                weights = torch.tensor(weights, dtype=torch.float32)
+                weights = weights / weights.mean()
+                class_weights = weights
+        
+        # Filter out conflicting kwargs
+        filtered_kwargs = {k: v for k, v in model_kwargs.items() 
+                          if k not in ['head_loss_type', 'head_label_smoothing']}
+        
         model = build_single_task_model(
-            num_classes=num_classes,
-            class_weights=class_weights_tensor,
-            loss_type=final_loss_types[task_name],
-            gradient_checkpointing=backbone_checkpointing,
-            **model_kwargs
+            num_classes=2,
+            backbone_pretrained=True,
+            backbone_freeze_mode='gradual',
+            head_loss_type='ce',  # Always use CrossEntropy
+            class_weights=class_weights,
+            backbone_checkpointing=backbone_checkpointing,
+            clip_pooling_type=model_kwargs.get('clip_pooling_type', 'mean'),
+            clip_pooling_temperature=model_kwargs.get('clip_pooling_temperature', 1.0),
+            **filtered_kwargs
         )
     
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total_params = sum(p.numel() for p in model.parameters())
-    logger.info(f"Model created. Trainable params: {trainable_params:,} / {total_params:,} ({trainable_params/total_params:.1%})")
-
     return model
 
 
@@ -658,15 +667,6 @@ def main():
     # Model arguments
     parser.add_argument('--multi-task', action='store_true', help='Use multi-task learning')
     parser.add_argument('--num-classes', type=int, default=2, help='Number of classes (single-task only)')
-    parser.add_argument('--backbone', type=str, default='videomae_base_patch16_224', help='Backbone model name')
-    parser.add_argument('--pooling', type=str, default='avg', help='Pooling type for head')
-    parser.add_argument('--temporal-module', type=str, default=None, help='Temporal module for head')
-    parser.add_argument('--dropout', type=float, default=0.5, help='Dropout rate in head')
-    parser.add_argument('--head-hidden-dim', type=int, default=2048, help='Hidden dimension in head')
-    parser.add_argument('--head-shared-layers', type=int, default=2, help='Number of shared layers in head')
-    parser.add_argument('--head-task-layers', type=int, default=1, help='Number of task-specific layers in head')
-    parser.add_argument('--head-use-bn', action='store_true', help='Use BatchNorm in head')
-    parser.add_argument('--head-activation', type=str, default='relu', help='Activation function in head')
     
     # Training arguments
     parser.add_argument('--epochs', type=int, default=20, help='Number of epochs')
@@ -706,8 +706,8 @@ def main():
                         help='Weight multiplier for primary tasks (default: 3.0)')
     parser.add_argument('--auxiliary-task-weight', type=float, default=1.0,
                         help='Weight multiplier for auxiliary tasks (default: 1.0)')
-    parser.add_argument('--primary-tasks', nargs='+', default=None,
-                        help='List of primary task names to train on. If not set, all available tasks will be used.')
+    parser.add_argument('--primary-tasks', nargs='+', default=['action_class', 'severity', 'offence'],
+                        help='List of primary task names - MVFouls has exactly 3 tasks: action_class, severity, offence (default: all 3)')
     
     # Adaptive learning rate arguments
     parser.add_argument('--adaptive-lr', action='store_true',
@@ -777,28 +777,6 @@ def main():
     
     args = parser.parse_args()
     
-    # Setup logging
-    log_level = 'DEBUG' if args.verbose else 'INFO'
-    logger = setup_logging(log_level)
-    
-    # Get official task metadata
-    tasks_metadata = get_task_metadata()
-    VALID_TASKS = tasks_metadata['task_names']
-    logger.info(f"Discovered valid tasks from metadata: {VALID_TASKS}")
-
-    # Determine which tasks to activate for this run
-    if args.primary_tasks:
-        # User has specified which tasks to run
-        invalid_tasks = [t for t in args.primary_tasks if t not in VALID_TASKS]
-        if invalid_tasks:
-            raise ValueError(f"Invalid tasks specified in --primary-tasks: {invalid_tasks}. Valid options are: {VALID_TASKS}")
-        ACTIVE_TASKS = args.primary_tasks
-    else:
-        # Default to the three main tasks
-        ACTIVE_TASKS = ['action', 'offence', 'severity']
-
-    logger.info(f"✅ Activating training for tasks: {ACTIVE_TASKS}")
-
     # Parse and validate loss types configuration
     loss_types_per_task = {}
     if args.loss_types:
@@ -816,37 +794,51 @@ def main():
             
             loss_types_per_task[task_name] = loss_type
     else:
-        # Default configuration: CE for action and offence, focal for severity
+        # Default configuration: CE for action_class and offence, focal for severity
         loss_types_per_task = {
-            'action': 'ce', 
+            'action_class': 'ce', 
             'severity': 'focal', 
             'offence': 'ce'
         }
     
-    # Validate that only valid tasks are specified in loss types
-    invalid_loss_tasks = [task for task in loss_types_per_task.keys() if task not in VALID_TASKS]
-    if invalid_loss_tasks:
-        raise ValueError(f"Invalid tasks in --loss-types: {invalid_loss_tasks}. "
-                        f"Valid tasks are: {VALID_TASKS}")
+    # Validate that only the 3 MVFouls tasks are specified
+    valid_tasks = ['action_class', 'severity', 'offence']
     
-    # Filter to only include active tasks
-    loss_types_per_task = {k: v for k, v in loss_types_per_task.items() if k in ACTIVE_TASKS}
-
-    # Fill missing active tasks with default 'ce'
-    missing_tasks = [task for task in ACTIVE_TASKS if task not in loss_types_per_task]
+    # Validate loss types tasks
+    invalid_tasks = [task for task in loss_types_per_task.keys() if task not in valid_tasks]
+    if invalid_tasks:
+        raise ValueError(f"Invalid tasks in --loss-types: {invalid_tasks}. "
+                        f"Valid tasks are: {valid_tasks}")
+    
+    # Ensure all 3 tasks are covered
+    missing_tasks = [task for task in valid_tasks if task not in loss_types_per_task]
     if missing_tasks:
+        # Fill missing tasks with default 'ce'
         for task in missing_tasks:
             loss_types_per_task[task] = 'ce'
-        logger.warning(f"Missing loss types for active tasks {missing_tasks}, defaulting to 'ce'")
-
-    logger.info(f"📋 Loss configuration for active tasks: {loss_types_per_task}")
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Missing loss types for tasks {missing_tasks}, defaulting to 'ce'")
+    
+    logger = logging.getLogger(__name__)
+    logger.info(f"📋 Loss configuration: {loss_types_per_task}")
     
     # Validate balance-tasks
     if args.balance_tasks:
-        invalid_balance_tasks = [task for task in args.balance_tasks if task not in VALID_TASKS]
-        if invalid_balance_tasks:
-            raise ValueError(f"Invalid tasks in --balance-tasks: {invalid_balance_tasks}. "
-                           f"Valid tasks are: {VALID_TASKS}")
+        invalid_tasks = [task for task in args.balance_tasks if task not in valid_tasks]
+        if invalid_tasks:
+            raise ValueError(f"Invalid tasks in --balance-tasks: {invalid_tasks}. "
+                           f"Valid tasks are: {valid_tasks}")
+    
+    # Validate primary-tasks  
+    if args.primary_tasks:
+        invalid_tasks = [task for task in args.primary_tasks if task not in valid_tasks]
+        if invalid_tasks:
+            raise ValueError(f"Invalid tasks in --primary-tasks: {invalid_tasks}. "
+                           f"Valid tasks are: {valid_tasks}")
+    
+    # Setup logging
+    log_level = 'DEBUG' if args.verbose else 'INFO'
+    logger = setup_logging(log_level)
     
     # Setup device
     if args.device == 'auto':
@@ -870,16 +862,16 @@ def main():
     logger.info(f"🚀 Starting balanced MVFouls training")
     logger.info(f"Device: {device}")
     logger.info(f"Multi-task: {args.multi_task}")
-    logger.info(f"Active tasks for this run: {ACTIVE_TASKS}")
+    logger.info(f"Target tasks: action_class, severity, offence")
     
     try:
-        # 1. Create Transforms
-        # ====================
+        # Create transforms
         transforms = get_video_transforms(image_size=224, augment_train=True)
         
-        # 2. Create Datasets
-        # ==================
+        # Create datasets
         logger.info("📂 Creating datasets...")
+        
+        # Extract root directory
         root_dir = str(Path(args.train_dir).parent)
         train_split = Path(args.train_dir).name.replace('_720p', '')
         val_split = Path(args.val_dir).name.replace('_720p', '')
@@ -896,13 +888,16 @@ def main():
             clip_sampling_strategy=args.clip_sampling_strategy
         )
         
+        # Apply fractional subset for smoke tests
         if 0 < args.train_fraction < 1.0:
             import random
             subset_size = int(len(train_dataset) * args.train_fraction)
             indices = list(range(len(train_dataset)))
             random.shuffle(indices)
-            train_dataset = torch.utils.data.Subset(train_dataset, indices[:subset_size])
-            logger.info(f"🔍 Using subset of training data: {len(train_dataset)} samples ({args.train_fraction*100:.1f}%)")
+            subset_indices = indices[:subset_size]
+            from torch.utils.data import Subset
+            train_dataset = Subset(train_dataset, subset_indices)
+            logger.info(f"🔍 Using subset of training data: {subset_size}/{len(indices)} samples ({args.train_fraction*100:.1f}%) for smoke test")
         
         val_dataset = MVFoulsDataset(
             root_dir=root_dir,
@@ -913,138 +908,432 @@ def main():
             bag_of_clips=args.bag_of_clips,
             max_clips_per_action=args.max_clips_per_action,
             min_clips_per_action=args.min_clips_per_action,
-            clip_sampling_strategy='uniform'
+            clip_sampling_strategy='uniform'  # Use uniform for validation
         )
+        
         logger.info(f"📊 Dataset sizes: {len(train_dataset)} train, {len(val_dataset)} val")
-
-        # 3. Analyze Dataset Imbalance
-        # ============================
-        logger.info("🔍 Analyzing class imbalance for active tasks...")
+        
+        # Analyze class imbalance
+        logger.info("🔍 Analyzing class imbalance...")
         imbalance_analysis = analyze_dataset_imbalance(train_dataset)
-        imbalance_analysis = {k: v for k, v in imbalance_analysis.items() if k in ACTIVE_TASKS}
-        for task, analysis in imbalance_analysis.items():
-            logger.info(f"  - Task '{task}': {analysis['num_classes']} classes. Distribution: {analysis['class_distribution_percent']}")
         
         if args.analyze_only:
-            logger.info("✅ Analysis complete. Exiting.")
+            logger.info("✅ Analysis complete. Exiting (--analyze-only specified).")
             return
-
-        # 4. Configure Task Loss Weights
-        # ================================
-        task_loss_weights = {}
-        if args.use_smart_weighting:
-            recommended_config = get_recommended_loss_config(True)
-            task_loss_weights = recommended_config['task_loss_weights']
-            if args.support_task_weight is not None:
-                for task in task_loss_weights:
-                    if task != 'action':
-                        task_loss_weights[task] = args.support_task_weight
-            logger.info("Using smart task weighting.")
-        else:
-            logger.info("Using primary/auxiliary task weighting.")
-            for task in ACTIVE_TASKS:
-                if task in args.primary_tasks if args.primary_tasks else ['action', 'offence', 'severity']:
-                     task_loss_weights[task] = args.primary_task_weight
-                else:
-                     task_loss_weights[task] = args.auxiliary_task_weight
-
-        task_loss_weights = {k: v for k, v in task_loss_weights.items() if k in ACTIVE_TASKS}
-        logger.info(f"📊 Final task loss weights: {task_loss_weights}")
-
-        # 5. Create Model
-        # ===============
-        logger.info("🏗️ Creating model...")
+        
+        # Create balanced model
+        logger.info("🏗️ Creating balanced model...")
+        
+        # Create task weighting strategy (simplified for Option A)
+        primary_task_weights = {}
+        if args.multi_task:
+            # Get all task names from metadata
+            from utils import get_task_metadata
+            metadata = get_task_metadata()
+            all_tasks = metadata['task_names']
+            
+            # VALIDATION: Ensure we only have the expected 3 tasks
+            expected_tasks = ['action_class', 'severity', 'offence']
+            if set(all_tasks) != set(expected_tasks):
+                logger.error(f"❌ Unexpected tasks found!")
+                logger.error(f"   Expected: {expected_tasks}")
+                logger.error(f"   Found: {all_tasks}")
+                raise ValueError(f"Dataset must contain exactly these 3 tasks: {expected_tasks}")
+            
+            logger.info(f"✅ Validated dataset contains exactly 3 expected tasks: {all_tasks}")
+            
+            if args.use_smart_weighting:
+                # Smart weighting based on semantic relevance for the 3 actual tasks
+                # All tasks are important for foul detection, but with different emphasis
+                
+                # Core detection tasks (what happened and how bad)
+                core_tasks = ['action_class', 'severity']
+                
+                # Decision task (final judgment)
+                decision_tasks = ['offence']
+                
+                logger.info("🎯 Smart task weighting enabled for 3-task MVFouls:")
+                logger.info(f"   Core tasks (action + severity): {core_tasks}")
+                logger.info(f"   Decision task (offence): {decision_tasks}")
+                logger.info(f"   Weights - Core: {args.core_task_weight}x, Support: {args.support_task_weight}x")
+                
+                for task_name in all_tasks:
+                    if task_name in core_tasks:
+                        primary_task_weights[task_name] = args.core_task_weight
+                        logger.info(f"     {task_name}: {args.core_task_weight}x (core)")
+                    elif task_name in decision_tasks:
+                        primary_task_weights[task_name] = args.support_task_weight
+                        logger.info(f"     {task_name}: {args.support_task_weight}x (decision)")
+                    else:
+                        # This shouldn't happen with validation above, but just in case
+                        primary_task_weights[task_name] = args.context_task_weight
+                        logger.warning(f"     {task_name}: {args.context_task_weight}x (unexpected task)")
+            
+            else:
+                # Simple primary/auxiliary weighting
+                logger.info(f"🎯 Setting up primary task weighting for 3-task MVFouls:")
+                logger.info(f"   Primary tasks: {args.primary_tasks} (weight: {args.primary_task_weight}x)")
+                logger.info(f"   Auxiliary tasks: all others (weight: {args.auxiliary_task_weight}x)")
+                
+                for task_name in all_tasks:
+                    if task_name in args.primary_tasks:
+                        primary_task_weights[task_name] = args.primary_task_weight
+                        logger.info(f"     {task_name}: {args.primary_task_weight}x (primary)")
+                    else:
+                        primary_task_weights[task_name] = args.auxiliary_task_weight
+                        logger.info(f"     {task_name}: {args.auxiliary_task_weight}x (auxiliary)")
+            
+            logger.info(f"📊 Final task weights: {primary_task_weights}")
+            logger.info("🎯 Using Option A: WeightedRandomSampler + CrossEntropy")
+            
+            # Add summary of what the model will predict
+            logger.info("🎯 MODEL WILL PREDICT EXACTLY 3 TASKS:")
+            for task_name, num_classes in zip(metadata['task_names'], metadata['num_classes']):
+                logger.info(f"   📋 {task_name}: {num_classes} classes")
+                if task_name == 'action_class':
+                    logger.info(f"      Classes: Standing tackling, Tackling, Challenge, Holding, Elbowing, etc.")
+                elif task_name == 'severity':
+                    logger.info(f"      Classes: Missing, 1, 2, 3, 4, 5") 
+                elif task_name == 'offence':
+                    logger.info(f"      Classes: Missing/Empty, Offence, No offence, Between")
+        
         model = create_balanced_model(
             multi_task=args.multi_task,
-            task_names=ACTIVE_TASKS,
             imbalance_analysis=imbalance_analysis,
-            primary_task_weights=task_loss_weights,
-            backbone_checkpointing=args.backbone_checkpointing,
-            use_class_weights=not args.disable_class_weights,
+            primary_task_weights=primary_task_weights,
+            backbone_checkpointing=True,  # Enable gradient checkpointing
+            use_class_weights=not args.disable_class_weights,  # Use simple inverse frequency class weights
             class_weight_cap=args.class_weight_cap,
-            loss_types_per_task=loss_types_per_task,
-            use_effective_weights=args.effective_class_weights,
-            # Pass model-specific arguments
-            backbone_name=args.backbone,
-            pretrained=True,
-            freeze_mode=args.freeze_mode,
-            pooling=args.pooling,
-            temporal_module=args.temporal_module,
-            dropout=args.dropout,
-            hidden_dim=args.head_hidden_dim,
-            num_shared_layers=args.head_shared_layers,
-            task_specific_layers=args.head_task_layers,
-            use_batch_norm=args.head_use_bn,
-            activation=args.head_activation,
+            loss_types_per_task=loss_types_per_task,  # New: per-task loss configuration
+            use_effective_weights=args.effective_class_weights,  # New: effective number class weights
             clip_pooling_type=args.clip_pooling_type,
             clip_pooling_temperature=args.clip_pooling_temperature
         )
-        model.to(device)
-
-        # 6. Create DataLoaders
-        # =====================
-        train_sampler = None
-        collate_fn = None
-        shuffle_train = True
+        
+        # Log bag-of-clips configuration
         if args.bag_of_clips:
-            collate_fn = bag_of_clips_collate_fn
-            shuffle_train = True
-        elif args.balanced_sampling:
-            train_sampler = create_balanced_sampler(train_dataset, task_names=args.balance_tasks)
-            shuffle_train = False
-
+            logger.info("🎬 BAG-OF-CLIPS MODE ENABLED:")
+            logger.info(f"   Max clips per action: {args.max_clips_per_action}")
+            logger.info(f"   Min clips per action: {args.min_clips_per_action}")
+            logger.info(f"   Clip sampling strategy: {args.clip_sampling_strategy}")
+            logger.info(f"   Clip pooling type: {args.clip_pooling_type}")
+            logger.info(f"   Clip pooling temperature: {args.clip_pooling_temperature}")
+            logger.info(f"   Training items: {len(train_dataset)} actions (instead of clips)")
+            logger.info(f"   Validation items: {len(val_dataset)} actions (instead of clips)")
+        else:
+            logger.info("🎬 CLIP-LEVEL MODE (standard)")
+            logger.info(f"   Training items: {len(train_dataset)} clips")
+            logger.info(f"   Validation items: {len(val_dataset)} clips")
+        
+        # Create unfreezing schedule
+        if args.freeze_mode == 'gradual' and not args.disable_gradual_unfreezing:
+            if args.unfreeze_schedule:
+                # Parse custom schedule
+                unfreeze_schedule = {int(k): v for k, v in json.loads(args.unfreeze_schedule).items()}
+                logger.info(f"📅 Using custom unfreeze schedule: {unfreeze_schedule}")
+            else:
+                # Generate automatic schedule
+                unfreeze_schedule = get_unfreeze_schedule(args.epochs, args.freeze_mode)
+                logger.info(f"📅 Generated unfreeze schedule for {args.epochs} epochs:")
+                for epoch, group in unfreeze_schedule.items():
+                    logger.info(f"   Epoch {epoch + 1}: unfreeze {group}")
+        else:
+            unfreeze_schedule = {}
+            if args.freeze_mode == 'gradual':
+                logger.info("⚠️ Gradual unfreezing disabled by --disable-gradual-unfreezing")
+        
+        # Create dataloaders with balanced sampling (Option A requires this)
+        train_sampler = None
+        shuffle = True
+        
+        if args.balanced_sampling:
+            # Check for potential double-correction
+            if not args.disable_class_weights:
+                logger.warning("⚠️  Both balanced sampling and class weights are enabled!")
+                logger.warning("   This may cause over-correction of class imbalance.")
+                logger.warning("   Consider using --disable-class-weights with balanced sampling.")
+            
+            # Handle convenience flag for joint severity sampling
+            if args.joint_severity_sampling:
+                balance_tasks = ['action_class', 'severity']
+                logger.info("🎯 Using convenience flag --joint-severity-sampling")
+            else:
+                # Handle backward compatibility: use --balance-task if specified, otherwise use --balance-tasks
+                balance_tasks = args.balance_tasks
+                if args.balance_task is not None:
+                    balance_tasks = [args.balance_task]
+                    logger.info("⚠️  Using deprecated --balance-task, consider switching to --balance-tasks")
+            
+            if len(balance_tasks) == 1:
+                logger.info(f"🎯 Creating balanced sampler for single task: {balance_tasks[0]}")
+            else:
+                logger.info(f"🎯 Creating joint balanced sampler for tasks: {balance_tasks}")
+                logger.info("   📊 Joint balancing ensures both tasks are balanced together")
+            
+            train_sampler = create_balanced_sampler(train_dataset, balance_tasks)
+            shuffle = False  # Cannot shuffle when using custom sampler
+            logger.info("✅ Option A: WeightedRandomSampler enabled")
+        else:
+            logger.info("⚠️  Option A: WeightedRandomSampler disabled (use --balanced-sampling to enable)")
+        
+        # Choose collate function based on mode
+        collate_fn = bag_of_clips_collate_fn if args.bag_of_clips else None
+        
         train_loader = DataLoader(
-            train_dataset, batch_size=args.batch_size, sampler=train_sampler,
-            shuffle=shuffle_train, num_workers=args.num_workers, pin_memory=True,
-            drop_last=True, collate_fn=collate_fn
+            train_dataset,
+            batch_size=args.batch_size,
+            sampler=train_sampler,
+            shuffle=shuffle,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            drop_last=True,
+            collate_fn=collate_fn
         )
+        
         val_loader = DataLoader(
-            val_dataset, batch_size=args.batch_size, shuffle=False,
-            num_workers=args.num_workers, pin_memory=True, collate_fn=collate_fn
+            val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            drop_last=False,
+            collate_fn=collate_fn
         )
-
-        # 7. Create Optimizer, Scheduler, and Trainer
-        # ===========================================
-        logger.info("Creating optimizer, scheduler, and trainer...")
-        optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-        scaler = GradScaler()
-        writer = SummaryWriter(log_dir=args.output_dir)
-
+        
+        # Create optimizer with separate parameter groups for backbone and head
+        backbone_params = list(model.backbone.parameters())
+        head_params = list(model.head.parameters())
+        
+        param_groups = [
+            {
+                'params': head_params,
+                'lr': args.lr,
+                'weight_decay': args.weight_decay,
+                'name': 'head'
+            },
+            {
+                'params': backbone_params,
+                'lr': args.lr,
+                'weight_decay': args.weight_decay,
+                'name': 'backbone'
+            }
+        ]
+        
+        optimizer = optim.AdamW(param_groups)
+        
+        # Create scheduler
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=args.epochs
+        )
+        
+        # Move model to device and ensure class weights are on correct device
+        model.to(device)
+        
+        # Move class weights to device if they exist
+        if hasattr(model.head, 'task_weights') and model.head.task_weights:
+            for task_name, weights in model.head.task_weights.items():
+                if isinstance(weights, torch.Tensor):
+                    model.head.task_weights[task_name] = weights.to(device)
+        
+        # Create trainer
         trainer = MultiTaskTrainer(
-            model=model, train_loader=train_loader, val_loader=val_loader,
-            optimizer=optimizer, scheduler=scheduler, device=device, epochs=args.epochs,
-            output_dir=args.output_dir, writer=writer, scaler=scaler,
+            model=model,
+            optimizer=optimizer,
+            device=device,
+            log_interval=50,
+            eval_interval=1,
             gradient_accumulation_steps=args.gradient_accumulation_steps,
-            use_smart_weighting=args.use_smart_weighting,
-            adaptive_weights=args.adaptive_weights,
-            weighting_strategy=args.weighting_strategy
+            max_grad_norm=1.0,
+            primary_task_weights=primary_task_weights,
+            weighting_strategy=args.weighting_strategy,  # New: adaptive weighting strategy
         )
-
-        # 8. Training Loop
-        # ================
-        logger.info("🚀 Starting training loop...")
-        unfreeze_schedule = get_unfreeze_schedule(args.epochs, args.freeze_mode)
+        
+        # Store additional configuration for adaptive weights
+        trainer.adaptive_weights = args.adaptive_weights
+        trainer.loss_types_per_task = loss_types_per_task
+        
+        # Store data loaders in trainer so they can be updated during gradual unfreezing
+        trainer.train_loader = train_loader
+        trainer.val_loader = val_loader
+        
+        # Setup output directory
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save configuration
+        config = {
+            'args': vars(args),
+            'imbalance_analysis': imbalance_analysis,
+            'model_config': model.config,
+            'unfreeze_schedule': unfreeze_schedule
+        }
+        
+        with open(output_dir / 'config.json', 'w') as f:
+            json.dump(config, f, indent=2, default=str)
+        
+        # Setup tensorboard
+        writer = SummaryWriter(output_dir / 'tensorboard')
+        
+        # Training loop
+        logger.info("🎯 Starting training with Option A: WeightedRandomSampler + CrossEntropy...")
+        
+        # Log primary task weighting if enabled
+        if args.multi_task and primary_task_weights:
+            logger.info("🎯 Primary task weighting enabled:")
+            for task_name, weight in primary_task_weights.items():
+                logger.info(f"   {task_name}: {weight}x weight")
+        
+        # Log adaptive learning rate configuration
+        if args.adaptive_lr:
+            logger.info("🔧 Adaptive learning rate scaling enabled:")
+            logger.info(f"   Base LR: {args.lr:.2e}")
+            logger.info(f"   Minor unfreezing scale: {args.lr_scale_minor}x")
+            logger.info(f"   Major unfreezing scale: {args.lr_scale_major}x")
+            logger.info(f"   Massive unfreezing scale: {args.lr_scale_massive}x")
+        else:
+            logger.info("⚠️  Adaptive learning rate scaling disabled (use --adaptive-lr to enable)")
+        
+        # Setup mixed precision training
+        use_amp = device.type == 'cuda'
+        scaler = GradScaler() if use_amp else None
+        if use_amp:
+            logger.info("🚀 Automatic Mixed Precision (AMP) enabled")
+        
+        best_metric = 0.0
         
         for epoch in range(args.epochs):
-            if not args.disable_gradual_unfreezing:
-                apply_gradual_unfreezing(
-                    model, epoch, unfreeze_schedule, logger, trainer, args, optimizer
-                )
-            trainer.train_epoch()
-            trainer.evaluate()
-            writer.add_scalar('LR/epoch', optimizer.param_groups[0]['lr'], epoch)
-            if trainer.should_stop():
-                logger.info("🛑 Early stopping triggered.")
-                break
+            print(f"\n{'='*80}")
+            logger.info(f"📅 Epoch {epoch + 1}/{args.epochs}")
+            print(f"{'='*80}")
+            
+            # Log current learning rates (head/backbone)
+            logger.info(f"📈 Learning Rates:")
+            for i, group in enumerate(optimizer.param_groups):
+                group_name = group.get('name', f'group_{i}')
+                logger.info(f"   {group_name}: {group['lr']:.2e}")
+            
+            # Apply gradual unfreezing if scheduled
+            apply_gradual_unfreezing(model, epoch, unfreeze_schedule, logger, trainer, args, optimizer)
+            
+            # Training
+            model.train()
+            train_metrics = []
+            
+            # Create progress bar for training
+            train_pbar = tqdm(
+                trainer.train_loader, 
+                desc=f"Epoch {epoch + 1}/{args.epochs} [Train]",
+                leave=False,
+                ncols=100,
+                unit="batch"
+            )
+            
+            for batch_idx, (videos, targets) in enumerate(train_pbar):
+                # Use mixed precision if available
+                with autocast() if use_amp else nullcontext():
+                    metrics = trainer.train_step(videos, targets, scaler=scaler if use_amp else None)
+                train_metrics.append(metrics)
                 
-        logger.info("✅ Training complete.")
+                # Update progress bar with current loss
+                if len(train_metrics) >= 10:  # Update every 10 batches for smoother display
+                    recent_loss = sum(m['total_loss'] for m in train_metrics[-10:]) / 10
+                    train_pbar.set_postfix({
+                        'Loss': f'{recent_loss:.4f}',
+                        'LR': f'{optimizer.param_groups[0]["lr"]:.2e}'
+                    })
+            
+            # Validation
+            print()  # Add space before validation
+            val_results = trainer.evaluate(
+                trainer.val_loader, 
+                compute_detailed_metrics=True,
+                compute_task_metrics=compute_task_metrics,
+                format_metrics_table=format_metrics_table
+            )
+            
+            # Log metrics
+            avg_train_loss = sum(m['total_loss'] for m in train_metrics) / len(train_metrics)
+            val_loss = val_results['avg_loss']
+            
+            print(f"\n📊 Epoch {epoch + 1} Results:")
+            print(f"   Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f}")
+            
+            # Print detailed metrics if available
+            if 'metrics_table' in val_results:
+                print("\n📋 Validation Metrics:")
+                print(val_results['metrics_table'])
+            
+            # Log current backbone status
+            if args.freeze_mode == 'gradual':
+                current_stage = model.backbone.get_current_unfreeze_stage()
+                trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                total_params = sum(p.numel() for p in model.parameters())
+                trainable_pct = (trainable_params / total_params) * 100
+                logger.info(f"🔧 Backbone status: stage {current_stage}, "
+                           f"{trainable_params:,} trainable ({trainable_pct:.1f}%)")
+            
+            # Save best model
+            current_metric = val_results.get('overall_metrics', {}).get('accuracy', 1.0 - val_loss)
+            if current_metric > best_metric:
+                best_metric = current_metric
+                
+                checkpoint = {
+                    'epoch': epoch + 1,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
+                    'best_metric': best_metric,
+                    'config': config,
+                    'backbone_stage': model.backbone.get_current_unfreeze_stage()
+                }
+                
+                # Save with unique filename including epoch and metric
+                model_filename = f'best_model_epoch_{epoch+1:02d}_metric_{best_metric:.4f}.pth'
+                model_path = output_dir / model_filename
+                torch.save(checkpoint, model_path)
+                
+                # Also save as latest best model (for easy loading)
+                latest_path = output_dir / 'best_model_latest.pth'
+                torch.save(checkpoint, latest_path)
+                
+                logger.info(f"💾 New best model saved! Metric: {best_metric:.4f}")
+                logger.info(f"   Saved as: {model_filename}")
+                logger.info(f"   Also saved as: best_model_latest.pth")
+            
+            # Step scheduler
+            if scheduler:
+                scheduler.step()
+            
+            # Tensorboard logging
+            writer.add_scalar('Loss/Train', avg_train_loss, epoch)
+            writer.add_scalar('Loss/Val', val_loss, epoch)
+            writer.add_scalar('Metric/Best', best_metric, epoch)
+            writer.add_scalar('LearningRate/Current', optimizer.param_groups[0]['lr'], epoch)
+            
+            # Log backbone unfreezing progress
+            if args.freeze_mode == 'gradual':
+                current_stage = model.backbone.get_current_unfreeze_stage()
+                trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                writer.add_scalar('Backbone/Stage', current_stage, epoch)
+                writer.add_scalar('Backbone/TrainableParams', trainable_params, epoch)
+        
         writer.close()
-
+        logger.info("🎉 Training completed successfully!")
+        
+        # Final backbone status
+        if args.freeze_mode == 'gradual':
+            final_stage = model.backbone.get_current_unfreeze_stage()
+            final_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            final_total = sum(p.numel() for p in model.parameters())
+            logger.info(f"🏁 Final backbone status: stage {final_stage}, "
+                       f"{final_trainable:,}/{final_total:,} trainable "
+                       f"({final_trainable/final_total*100:.1f}%)")
+        
     except Exception as e:
-        logger.exception(f"An error occurred during training: {e}")
-        sys.exit(1)
+        logger.error(f"💥 Training failed: {e}")
+        raise
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main() 
