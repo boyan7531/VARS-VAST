@@ -759,7 +759,7 @@ class MVFoulsDataset(Dataset):
         
         Returns:
             If bag_of_clips=False:
-                Tuple[torch.Tensor, torch.Tensor]: (video_tensor, targets_tensor)
+            Tuple[torch.Tensor, torch.Tensor]: (video_tensor, targets_tensor)
                 - video_tensor: Shape (C, T, H, W) after transforms
                 - targets_tensor: Shape (N_TASKS,) with integer class labels
             
