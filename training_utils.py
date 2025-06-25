@@ -272,10 +272,10 @@ class MultiTaskTrainer:
             step_results = self.train_step(batch)
             epoch_losses.append(step_results['total_loss'])
             
-            # Logging
-            if (batch_idx + 1) % self.log_interval == 0:
-                avg_loss = np.mean(epoch_losses[-self.log_interval:])
-                print(f"  Batch {batch_idx + 1}/{len(dataloader)}: Loss = {avg_loss:.4f}")
+            # Logging (disabled in favor of custom progress bar)
+            # if (batch_idx + 1) % self.log_interval == 0:
+            #     avg_loss = np.mean(epoch_losses[-self.log_interval:])
+            #     print(f"  Batch {batch_idx + 1}/{len(dataloader)}: Loss = {avg_loss:.4f}")
             
             # Update main scheduler
             if scheduler is not None and hasattr(scheduler, 'step'):

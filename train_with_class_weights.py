@@ -573,15 +573,78 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
     # Build joint_labels list
     joint_labels = []
     
-    # FIXED: Handle subset indices correctly using dataset_index
-    if subset_indices is not None:
-        # For subsets, process clips via dataset_index
-        for idx in subset_indices:
-            if idx < len(base_dataset.dataset_index):
-                clip_info = base_dataset.dataset_index[idx]
+    # Check if dataset is in bag-of-clips mode
+    if hasattr(base_dataset, 'bag_of_clips') and base_dataset.bag_of_clips:
+        print(f"🎬 Creating sampler for bag-of-clips mode: {len(base_dataset.action_index)} actions")
+        
+        # For bag-of-clips mode, sample based on actions, not clips
+        if subset_indices is not None:
+            # For subsets in bag-of-clips mode
+            for idx in subset_indices:
+                if idx < len(base_dataset.action_index):
+                    action_id = base_dataset.action_index[idx]
+                    # Get any clip from this action for labels (all clips in action have same labels)
+                    if action_id in base_dataset.action_groups:
+                        clip_info = base_dataset.action_groups[action_id][0]  # First clip
+                        if clip_info.numeric_labels is not None:
+                            joint_key = []
+                            from utils import get_task_metadata
+                            metadata = get_task_metadata()
+                            task_names_list = metadata['task_names']
+                            
+                            for task_name in task_names:
+                                if task_name in task_names_list:
+                                    task_idx = task_names_list.index(task_name)
+                                    joint_key.append(clip_info.numeric_labels[task_idx].item())
+                                else:
+                                    joint_key.append(0)  # Default value
+                            joint_labels.append(tuple(joint_key))
+        else:
+            # For full datasets in bag-of-clips mode
+            for action_id in base_dataset.action_index:
+                if action_id in base_dataset.action_groups:
+                    clip_info = base_dataset.action_groups[action_id][0]  # First clip
+                    if clip_info.numeric_labels is not None:
+                        joint_key = []
+                        from utils import get_task_metadata
+                        metadata = get_task_metadata()
+                        task_names_list = metadata['task_names']
+                        
+                        for task_name in task_names:
+                            if task_name in task_names_list:
+                                task_idx = task_names_list.index(task_name)
+                                joint_key.append(clip_info.numeric_labels[task_idx].item())
+                            else:
+                                joint_key.append(0)  # Default value
+                        joint_labels.append(tuple(joint_key))
+    else:
+        print(f"📼 Creating sampler for standard clip mode: {len(base_dataset.dataset_index)} clips")
+        
+        # Original clip-level logic
+        if subset_indices is not None:
+            # For subsets, process clips via dataset_index
+            for idx in subset_indices:
+                if idx < len(base_dataset.dataset_index):
+                    clip_info = base_dataset.dataset_index[idx]
+                    if clip_info.numeric_labels is not None:
+                        joint_key = []
+                        # Get the task indices for the requested tasks
+                        from utils import get_task_metadata
+                        metadata = get_task_metadata()
+                        task_names_list = metadata['task_names']
+                        
+                        for task_name in task_names:
+                            if task_name in task_names_list:
+                                task_idx = task_names_list.index(task_name)
+                                joint_key.append(clip_info.numeric_labels[task_idx].item())
+                            else:
+                                joint_key.append(0)  # Default value
+                        joint_labels.append(tuple(joint_key))
+        else:
+            # For full datasets, process all clips via dataset_index
+            for clip_info in base_dataset.dataset_index:
                 if clip_info.numeric_labels is not None:
                     joint_key = []
-                    # Get the task indices for the requested tasks
                     from utils import get_task_metadata
                     metadata = get_task_metadata()
                     task_names_list = metadata['task_names']
@@ -593,22 +656,6 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
                         else:
                             joint_key.append(0)  # Default value
                     joint_labels.append(tuple(joint_key))
-    else:
-        # For full datasets, process all clips via dataset_index
-        for clip_info in base_dataset.dataset_index:
-            if clip_info.numeric_labels is not None:
-                joint_key = []
-                from utils import get_task_metadata
-                metadata = get_task_metadata()
-                task_names_list = metadata['task_names']
-                
-                for task_name in task_names:
-                    if task_name in task_names_list:
-                        task_idx = task_names_list.index(task_name)
-                        joint_key.append(clip_info.numeric_labels[task_idx].item())
-                    else:
-                        joint_key.append(0)  # Default value
-                joint_labels.append(tuple(joint_key))
     
     # Count frequencies etc.
     class_counts = Counter(joint_labels)
@@ -1225,14 +1272,18 @@ def main():
                 trainer.train_loader, 
                 desc=f"Epoch {epoch + 1}/{args.epochs} [Train]",
                 leave=False,
-                ncols=100,
-                unit="batch"
+                ncols=120,
+                unit="batch",
+                dynamic_ncols=True,
+                miniters=1,
+                disable=False,
+                ascii=False
             )
             
-            for batch_idx, (videos, targets) in enumerate(train_pbar):
+            for batch_idx, batch in enumerate(train_pbar):
                 # Use mixed precision if available
                 with autocast() if use_amp else nullcontext():
-                    metrics = trainer.train_step(videos, targets, scaler=scaler if use_amp else None)
+                    metrics = trainer.train_step(batch, scaler=scaler if use_amp else None)
                 train_metrics.append(metrics)
                 
                 # Update progress bar with current loss
