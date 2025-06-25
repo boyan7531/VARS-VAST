@@ -351,7 +351,6 @@ class MultiTaskTrainer:
                 videos = videos.to(self.device)
                 
                 # Forward pass
-                print(f"DEBUG: model.multi_task = {self.model.multi_task}")  # Debug line
                 if self.model.multi_task:
                     logits_dict, extras = self.model(videos, clip_mask=clip_masks, return_dict=True)
                     
