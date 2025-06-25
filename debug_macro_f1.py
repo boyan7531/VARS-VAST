@@ -166,7 +166,15 @@ def debug_model_on_validation():
             # Store results
             for task_name in metadata['task_names']:
                 all_logits[task_name].append(logits_dict[task_name].cpu())
-                all_targets[task_name].append(torch.tensor([targets[task_name]]))
+                # Handle different target formats
+                if isinstance(targets, dict):
+                    target_value = targets[task_name]
+                else:
+                    # If targets is a tensor, assume task order matches metadata
+                    task_idx = metadata['task_names'].index(task_name)
+                    target_value = targets[task_idx] if targets.dim() > 0 else targets.item()
+                
+                all_targets[task_name].append(torch.tensor([target_value]))
     
     # Concatenate all results
     combined_logits = {}
