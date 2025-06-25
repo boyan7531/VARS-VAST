@@ -351,6 +351,7 @@ class MultiTaskTrainer:
                 videos = videos.to(self.device)
                 
                 # Forward pass
+                print(f"DEBUG: model.multi_task = {self.model.multi_task}")  # Debug line
                 if self.model.multi_task:
                     logits_dict, extras = self.model(videos, clip_mask=clip_masks, return_dict=True)
                     
@@ -375,19 +376,20 @@ class MultiTaskTrainer:
                     all_logits.append(logits_dict)
                     all_targets.append(targets_dict)
                 else:
+                    print(f"DEBUG: Using single-task evaluation path")  # Debug line
                     logits, extras = self.model(videos, clip_mask=clip_masks, return_dict=False)
                     targets = targets.to(self.device)
                     
-                                # For single-task training, extract the main task (offence detection)
-            if targets.dim() > 1 and get_task_metadata is not None:
-                metadata = get_task_metadata()
-                task_names = metadata['task_names']
-                if 'offence' in task_names:
-                    offence_idx = task_names.index('offence')
-                    if targets.size(1) > offence_idx:
-                        offence_targets = targets[:, offence_idx]  # Shape: [batch_size]
-                        # Convert offence labels: 0: Missing/Empty -> 0, 1: Offence -> 1, 2: No offence -> 0
-                        targets = (offence_targets == 1).long()  # Convert to binary
+                    # For single-task training, extract the main task (offence detection)
+                    if targets.dim() > 1 and get_task_metadata is not None:
+                        metadata = get_task_metadata()
+                        task_names = metadata['task_names']
+                        if 'offence' in task_names:
+                            offence_idx = task_names.index('offence')
+                            if targets.size(1) > offence_idx:
+                                offence_targets = targets[:, offence_idx]  # Shape: [batch_size]
+                                # Convert offence labels: 0: Missing/Empty -> 0, 1: Offence -> 1, 2: No offence -> 0
+                                targets = (offence_targets == 1).long()  # Convert to binary
                     
                     # Compute loss
                     loss_dict = self.model.compute_loss(logits, targets, return_dict=True)
