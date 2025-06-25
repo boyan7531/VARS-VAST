@@ -153,6 +153,11 @@ def debug_model_on_validation():
             else:
                 videos = videos.unsqueeze(0)  # Add batch dimension
             
+            # Convert to float and normalize if needed
+            videos = videos.float()
+            if videos.max() > 1.0:
+                videos = videos / 255.0  # Normalize from [0, 255] to [0, 1]
+            
             videos = videos.to(device)
             
             # Forward pass (bag-of-clips mode)
