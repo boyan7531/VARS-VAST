@@ -17,7 +17,7 @@ mySNdl.downloadDataTask(task="mvfouls", split=["train","valid","test","challenge
 print("Download completed. Extracting archived folders...")
 
 # Define the expected zip files and their corresponding folder names
-zip_splits = ["train_720p", "valid_720p", "test_720p", "challenge_720p"]
+zip_splits = ["train", "valid", "test", "challenge"]
 
 for split in zip_splits:
     zip_file = mvfouls_dir / f"{split}.zip"
