@@ -172,12 +172,24 @@ class MultiTaskTrainer:
             else:
                 filtered_logits = logits_dict
             
-            # Compute loss
-            loss_dict = self.model.compute_loss(filtered_logits, filtered_targets, return_dict=True)
-            
-            # Task weights are already applied in model.compute_loss(), 
-            # so we don't double-apply them here
-            total_loss = loss_dict['total_loss']
+            # Check if we should use unified adaptive loss
+            if (hasattr(self, 'adaptive_weights') and self.adaptive_weights and 
+                hasattr(self.model.head, 'compute_unified_loss')):
+                # Use unified adaptive loss computation
+                focal_gamma = getattr(self.model, 'task_focal_gamma_map', {}).get('default', 2.0)
+                
+                loss_dict = self.model.head.compute_unified_loss(
+                    filtered_logits,
+                    filtered_targets,
+                    weighting_strategy=self.weighting_strategy,
+                    focal_gamma=focal_gamma,
+                    adaptive_weights=True
+                )
+                total_loss = loss_dict.get('total_loss', loss_dict.get('total_loss_adaptive', 0.0))
+            else:
+                # Use standard loss computation
+                loss_dict = self.model.compute_loss(filtered_logits, filtered_targets, return_dict=True)
+                total_loss = loss_dict['total_loss']
         else:
             logits, extras = self.model(videos, clip_mask=clip_masks, return_dict=False)
             targets = targets.to(self.device)

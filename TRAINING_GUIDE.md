@@ -165,6 +165,83 @@ python train.py \
 
 ## Advanced Features
 
+### Adaptive Loss Configuration 🎯
+
+The MVFouls training pipeline now supports rich, adaptive loss strategies to handle class imbalance better:
+
+#### Per-Task Loss Types
+Configure different loss functions for each task:
+```bash
+# Use Cross-Entropy for action_class, Focal Loss for severity, Cross-Entropy for offence
+python train_with_class_weights.py \
+  --train-dir ./mvfouls/train \
+  --val-dir ./mvfouls/val \
+  --train-annotations ./mvfouls/train.csv \
+  --val-annotations ./mvfouls/val.csv \
+  --multi-task \
+  --loss-types action_class ce severity focal offence ce
+```
+
+#### Adaptive Task Weighting
+Automatically adjust task weights based on validation performance:
+```bash
+# Tasks performing worse get higher weights during training
+python train_with_class_weights.py \
+  --multi-task \
+  --adaptive-weights \
+  --weighting-strategy inverse_accuracy \
+  [... other args ...]
+```
+
+#### Effective Number Class Weights
+For extreme class imbalance, use effective number weighting:
+```bash
+python train_with_class_weights.py \
+  --multi-task \
+  --effective-class-weights \
+  [... other args ...]
+```
+
+#### Class Imbalance Strategies
+
+| Strategy | Description | When to Use | CLI Flags |
+|----------|-------------|-------------|-----------|
+| **Balanced Sampling** | Equalizes class representation in batches | Moderate imbalance | `--balanced-sampling` |
+| **Effective Class Weights** | Uses effective number of samples | Extreme imbalance | `--effective-class-weights` |
+| **Focal Loss** | Focuses on hard examples | Many easy examples | `--loss-types task focal` |
+| **Adaptive Weighting** | Adjusts task weights based on performance | Multi-task scenarios | `--adaptive-weights` |
+
+#### Recommended Recipes
+
+**1. Balanced Sampling Only (Simple):**
+```bash
+python train_with_class_weights.py \
+  --multi-task \
+  --balanced-sampling \
+  --disable-class-weights \
+  [... other args ...]
+```
+
+**2. Effective Weights + Focal Loss (Advanced):**
+```bash
+python train_with_class_weights.py \
+  --multi-task \
+  --effective-class-weights \
+  --loss-types action_class ce severity focal offence ce \
+  [... other args ...]
+```
+
+**3. Full Adaptive Strategy (Research):**
+```bash
+python train_with_class_weights.py \
+  --multi-task \
+  --effective-class-weights \
+  --adaptive-weights \
+  --weighting-strategy difficulty \
+  --loss-types action_class ce severity focal offence ce \
+  [... other args ...]
+```
+
 ### Curriculum Learning
 The trainer supports automatic curriculum learning for multi-task scenarios. Tasks are gradually introduced based on performance.
 
