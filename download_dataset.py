@@ -12,7 +12,7 @@ print(f"Downloading MVFouls dataset to: {mvfouls_dir}")
 
 # Download the dataset
 mySNdl = SNdl(LocalDirectory=str(dataset_dir))
-mySNdl.downloadDataTask(task="mvfouls", split=["train","valid","test","challenge"], password="s0cc3rn3t", version="720p")
+mySNdl.downloadDataTask(task="mvfouls", split=["train","valid","test","challenge"], password="s0cc3rn3t")
 
 print("Download completed. Extracting archived folders...")
 
