@@ -47,14 +47,19 @@ TASKS_INFO = OrderedDict([
     ("offence", ["Missing/Empty", "Offence", "No offence", "Between"]),
 ])
 
+# VALIDATION: Ensure this dataset only supports exactly these 3 tasks
+EXPECTED_TASKS = ["action_class", "severity", "offence"]
+assert list(TASKS_INFO.keys()) == EXPECTED_TASKS, f"Dataset must contain exactly these 3 tasks: {EXPECTED_TASKS}"
+
 # Create label-to-index and index-to-label mappings
 LABEL2IDX = {task: {lbl: i for i, lbl in enumerate(labels)} for task, labels in TASKS_INFO.items()}
 IDX2LABEL = {task: labels for task, labels in TASKS_INFO.items()}
 
-# Number of tasks
+# Number of tasks (always 3 for MVFouls)
 N_TASKS = len(TASKS_INFO)
+assert N_TASKS == 3, f"MVFouls dataset must have exactly 3 tasks, found {N_TASKS}"
 
-# Field mapping for annotations - only for the 3 core tasks
+# Field mapping for annotations - exactly the 3 core tasks
 FIELD_MAP = {
     'action_class': 'Action class',
     'severity': 'Severity',

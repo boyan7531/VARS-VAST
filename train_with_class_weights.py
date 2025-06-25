@@ -416,6 +416,16 @@ def create_balanced_model(
         metadata = get_task_metadata()
         task_names = metadata['task_names']
         
+        # VALIDATION: Ensure we only have the expected 3 tasks
+        expected_tasks = ['action_class', 'severity', 'offence']
+        if set(task_names) != set(expected_tasks):
+            logger.error(f"❌ Unexpected tasks found!")
+            logger.error(f"   Expected: {expected_tasks}")
+            logger.error(f"   Found: {task_names}")
+            raise ValueError(f"Dataset must contain exactly these 3 tasks: {expected_tasks}")
+        
+        logger.info(f"✅ Validated dataset contains exactly 3 expected tasks: {task_names}")
+        
         # Prepare simplified task-specific configurations
         task_weights = {}
         loss_types_per_task = []
@@ -464,6 +474,17 @@ def create_balanced_model(
             clip_pooling_type=model_kwargs.get('clip_pooling_type', 'mean'),
             clip_pooling_temperature=model_kwargs.get('clip_pooling_temperature', 1.0)
         )
+        
+        # Add summary of what the model will predict
+        logger.info("🎯 MODEL WILL PREDICT EXACTLY 3 TASKS:")
+        for task_name, num_classes in zip(metadata['task_names'], metadata['num_classes']):
+            logger.info(f"   📋 {task_name}: {num_classes} classes")
+            if task_name == 'action_class':
+                logger.info(f"      Classes: Standing tackling, Tackling, Challenge, Holding, Elbowing, etc.")
+            elif task_name == 'severity':
+                logger.info(f"      Classes: Missing, 1, 2, 3, 4, 5") 
+            elif task_name == 'offence':
+                logger.info(f"      Classes: Missing/Empty, Offence, No offence, Between")
         
     else:
         # Single-task model with simple class weights
@@ -662,11 +683,11 @@ def main():
     
     # Primary task weighting arguments
     parser.add_argument('--primary-task-weight', type=float, default=3.0,
-                        help='Weight multiplier for primary tasks (action_class, severity) (default: 3.0)')
+                        help='Weight multiplier for primary tasks (default: 3.0)')
     parser.add_argument('--auxiliary-task-weight', type=float, default=1.0,
                         help='Weight multiplier for auxiliary tasks (default: 1.0)')
     parser.add_argument('--primary-tasks', nargs='+', default=['action_class', 'severity', 'offence'],
-                        help='List of primary task names (default: action_class severity)')
+                        help='List of primary task names - MVFouls has exactly 3 tasks: action_class, severity, offence (default: all 3)')
     
     # Adaptive learning rate arguments
     parser.add_argument('--adaptive-lr', action='store_true',
@@ -682,7 +703,7 @@ def main():
     parser.add_argument('--balanced-sampling', action='store_true',
                        help='Use balanced sampling to ensure equal class representation')
     parser.add_argument('--balance-tasks', nargs='+', default=['action_class'],
-                       help='Task(s) to balance sampling for. For joint balancing, specify multiple tasks (default: action_class)')
+                       help='Task(s) to balance sampling for - choose from: action_class, severity, offence (default: action_class)')
     parser.add_argument('--balance-task', type=str, default=None,
                        help='Single task to balance sampling for (deprecated, use --balance-tasks)')
     parser.add_argument('--joint-severity-sampling', action='store_true',
@@ -690,13 +711,13 @@ def main():
     
     # Add new sophisticated weighting strategy
     parser.add_argument('--use-smart-weighting', action='store_true',
-                        help='Use sophisticated task weighting based on semantic relevance')
+                        help='Use sophisticated task weighting based on semantic relevance for the 3 MVFouls tasks')
     parser.add_argument('--core-task-weight', type=float, default=20.0,
                         help='Weight for core tasks (action_class, severity) (default: 20.0)')
     parser.add_argument('--support-task-weight', type=float, default=2.0,
-                        help='Weight for supporting tasks (contact, bodypart, offence) (default: 2.0)')
+                        help='Weight for decision task (offence) (default: 2.0)')
     parser.add_argument('--context-task-weight', type=float, default=0.5,
-                        help='Weight for contextual tasks (remaining tasks) (default: 0.5)')
+                        help='Weight for unexpected tasks (should not be used) (default: 0.5)')
     
     # Add train-fraction argument
     parser.add_argument('--train-fraction', type=float, default=1.0,
@@ -720,6 +741,23 @@ def main():
     
     args = parser.parse_args()
     
+    # Validate that only the 3 MVFouls tasks are specified
+    valid_tasks = ['action_class', 'severity', 'offence']
+    
+    # Validate balance-tasks
+    if args.balance_tasks:
+        invalid_tasks = [task for task in args.balance_tasks if task not in valid_tasks]
+        if invalid_tasks:
+            raise ValueError(f"Invalid tasks in --balance-tasks: {invalid_tasks}. "
+                           f"Valid tasks are: {valid_tasks}")
+    
+    # Validate primary-tasks  
+    if args.primary_tasks:
+        invalid_tasks = [task for task in args.primary_tasks if task not in valid_tasks]
+        if invalid_tasks:
+            raise ValueError(f"Invalid tasks in --primary-tasks: {invalid_tasks}. "
+                           f"Valid tasks are: {valid_tasks}")
+    
     # Setup logging
     log_level = 'DEBUG' if args.verbose else 'INFO'
     logger = setup_logging(log_level)
@@ -730,9 +768,23 @@ def main():
     else:
         device = torch.device(args.device)
     
+    # Print clear summary of what this training will do
+    print("\n" + "="*80)
+    print("🚀 MVFOULS 3-TASK MULTI-TASK TRAINING")
+    print("="*80)
+    print("📋 This model will predict EXACTLY 3 tasks:")
+    print("   1️⃣  action_class (10 classes): What type of action occurred")
+    print("       • Standing tackling, Tackling, Challenge, Holding, Elbowing, etc.")
+    print("   2️⃣  severity (6 classes): How severe was the action")  
+    print("       • Missing, 1, 2, 3, 4, 5")
+    print("   3️⃣  offence (4 classes): Final judgment on the action")
+    print("       • Missing/Empty, Offence, No offence, Between")
+    print("="*80)
+    
     logger.info(f"🚀 Starting balanced MVFouls training")
     logger.info(f"Device: {device}")
     logger.info(f"Multi-task: {args.multi_task}")
+    logger.info(f"Target tasks: action_class, severity, offence")
     
     try:
         # Create transforms
@@ -802,46 +854,70 @@ def main():
             metadata = get_task_metadata()
             all_tasks = metadata['task_names']
             
+            # VALIDATION: Ensure we only have the expected 3 tasks
+            expected_tasks = ['action_class', 'severity', 'offence']
+            if set(all_tasks) != set(expected_tasks):
+                logger.error(f"❌ Unexpected tasks found!")
+                logger.error(f"   Expected: {expected_tasks}")
+                logger.error(f"   Found: {all_tasks}")
+                raise ValueError(f"Dataset must contain exactly these 3 tasks: {expected_tasks}")
+            
+            logger.info(f"✅ Validated dataset contains exactly 3 expected tasks: {all_tasks}")
+            
             if args.use_smart_weighting:
-                # Smart weighting based on semantic relevance
-                # Core tasks (main objectives)
+                # Smart weighting based on semantic relevance for the 3 actual tasks
+                # All tasks are important for foul detection, but with different emphasis
+                
+                # Core detection tasks (what happened and how bad)
                 core_tasks = ['action_class', 'severity']
                 
-                # Support tasks (directly relevant to core tasks)
-                support_tasks = ['contact', 'bodypart', 'offence', 'upper_body_part']
+                # Decision task (final judgment)
+                decision_tasks = ['offence']
                 
-                # Context tasks (provide additional context)
-                context_tasks = ['multiple_fouls', 'try_to_play', 'touch_ball', 'handball', 'handball_offence']
+                logger.info("🎯 Smart task weighting enabled for 3-task MVFouls:")
+                logger.info(f"   Core tasks (action + severity): {core_tasks}")
+                logger.info(f"   Decision task (offence): {decision_tasks}")
+                logger.info(f"   Weights - Core: {args.core_task_weight}x, Support: {args.support_task_weight}x")
                 
                 for task_name in all_tasks:
                     if task_name in core_tasks:
                         primary_task_weights[task_name] = args.core_task_weight
-                    elif task_name in support_tasks:
+                        logger.info(f"     {task_name}: {args.core_task_weight}x (core)")
+                    elif task_name in decision_tasks:
                         primary_task_weights[task_name] = args.support_task_weight
-                    elif task_name in context_tasks:
-                        primary_task_weights[task_name] = args.context_task_weight
+                        logger.info(f"     {task_name}: {args.support_task_weight}x (decision)")
                     else:
+                        # This shouldn't happen with validation above, but just in case
                         primary_task_weights[task_name] = args.context_task_weight
-                
-                logger.info("🎯 Smart task weighting enabled:")
-                logger.info(f"   Core tasks ({args.core_task_weight}x): {core_tasks}")
-                logger.info(f"   Support tasks ({args.support_task_weight}x): {support_tasks}")
-                logger.info(f"   Context tasks ({args.context_task_weight}x): {context_tasks}")
+                        logger.warning(f"     {task_name}: {args.context_task_weight}x (unexpected task)")
             
             else:
                 # Simple primary/auxiliary weighting
-                logger.info(f"🎯 Setting up primary task weighting:")
+                logger.info(f"🎯 Setting up primary task weighting for 3-task MVFouls:")
                 logger.info(f"   Primary tasks: {args.primary_tasks} (weight: {args.primary_task_weight}x)")
                 logger.info(f"   Auxiliary tasks: all others (weight: {args.auxiliary_task_weight}x)")
                 
                 for task_name in all_tasks:
                     if task_name in args.primary_tasks:
                         primary_task_weights[task_name] = args.primary_task_weight
+                        logger.info(f"     {task_name}: {args.primary_task_weight}x (primary)")
                     else:
                         primary_task_weights[task_name] = args.auxiliary_task_weight
+                        logger.info(f"     {task_name}: {args.auxiliary_task_weight}x (auxiliary)")
             
-            logger.info(f"   Task weights: {primary_task_weights}")
+            logger.info(f"📊 Final task weights: {primary_task_weights}")
             logger.info("🎯 Using Option A: WeightedRandomSampler + CrossEntropy")
+            
+            # Add summary of what the model will predict
+            logger.info("🎯 MODEL WILL PREDICT EXACTLY 3 TASKS:")
+            for task_name, num_classes in zip(metadata['task_names'], metadata['num_classes']):
+                logger.info(f"   📋 {task_name}: {num_classes} classes")
+                if task_name == 'action_class':
+                    logger.info(f"      Classes: Standing tackling, Tackling, Challenge, Holding, Elbowing, etc.")
+                elif task_name == 'severity':
+                    logger.info(f"      Classes: Missing, 1, 2, 3, 4, 5") 
+                elif task_name == 'offence':
+                    logger.info(f"      Classes: Missing/Empty, Offence, No offence, Between")
         
         model = create_balanced_model(
             multi_task=args.multi_task,

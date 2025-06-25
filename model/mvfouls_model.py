@@ -207,6 +207,27 @@ class MVFoulsModel(nn.Module):
         
         # Print model summary
         self.print_model_summary()
+        
+        # Multi-task configuration
+        if multi_task and get_task_metadata is not None:
+            # Use task metadata from utils
+            if task_names is None or num_classes_per_task is None:
+                metadata = get_task_metadata()
+                self.task_names = metadata['task_names']
+                self.num_classes_per_task = metadata['num_classes']
+                
+                # Validation: Ensure exactly 3 tasks
+                expected_tasks = ['action_class', 'severity', 'offence']
+                if set(self.task_names) != set(expected_tasks):
+                    raise ValueError(f"Multi-task model expects exactly these 3 tasks: {expected_tasks}, "
+                                   f"but found: {self.task_names}")
+                
+                print(f"✅ Multi-task model configured for exactly 3 MVFouls tasks:")
+                for task_name, num_cls in zip(self.task_names, self.num_classes_per_task):
+                    print(f"   📋 {task_name}: {num_cls} classes")
+            else:
+                self.task_names = task_names
+                self.num_classes_per_task = num_classes_per_task
     
     def forward(
         self, 
