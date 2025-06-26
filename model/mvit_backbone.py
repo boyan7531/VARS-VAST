@@ -44,11 +44,7 @@ class VideoMViTBackbone(nn.Module):
         self._current = -1  # For gradual mode
         
         # Load Video MViTv2-B model
-        if pretrained:
-            self._load_pretrained_model()
-        else:
-            self.model = video_models.mvit_v2_b(weights=None)
-            print("Created MViTv2-B without pretrained weights")
+        self._load_pretrained_model(pretrained)
         
         # Remove classifier head
         self._remove_classifier_head()
@@ -69,42 +65,54 @@ class VideoMViTBackbone(nn.Module):
         # Print parameter summary
         self._print_parameter_summary()
     
-    def _load_pretrained_model(self):
+    def _load_pretrained_model(self, pretrained: bool):
         """Load pretrained MViTv2-B model with fallback options."""
         print("Loading pretrained MViTv2-B model...")
         
-        try:
-            # Try latest torchvision weights first
+        # Step 1: Try torchvision MViTv2-B (newer torchvision)
+        if hasattr(video_models, 'mvit_v2_b'):
             try:
-                weights = video_models.MViT_V2_B_Weights.KINETICS400_IMAGENET22K_V1
+                # Check if weight enum exists
+                weights_enum = getattr(video_models, 'MViT_V2_B_Weights', None)
+                if weights_enum is not None and hasattr(weights_enum, 'KINETICS400_IMAGENET22K_V1'):
+                    weights = weights_enum.KINETICS400_IMAGENET22K_V1 if pretrained else None
+                else:
+                    weights = None
+
                 self.model = video_models.mvit_v2_b(weights=weights)
-                print("✅ Loaded MViTv2-B with KINETICS400_IMAGENET22K_V1 weights")
+                print("✅ Loaded torchvision mvit_v2_b (weights={} )".format('pretrained' if weights else 'random'))
                 return
-            except AttributeError:
-                # Fallback to older weight naming
-                weights = getattr(video_models.MViT_V2_B_Weights, 'DEFAULT', None)
-                if weights:
-                    self.model = video_models.mvit_v2_b(weights=weights)
-                    print("✅ Loaded MViTv2-B with DEFAULT weights")
-                    return
-        except Exception as e:
-            print(f"Failed to load from torchvision: {e}")
+            except Exception as e:
+                print(f"Failed to load torchvision mvit_v2_b: {e}")
+
+        # Step 2: Try torchvision MViTv1-B as closest alternative
+        if hasattr(video_models, 'mvit_v1_b'):
+            try:
+                weights_enum = getattr(video_models, 'MViT_V1_B_Weights', None)
+                if weights_enum is not None and hasattr(weights_enum, 'KINETICS400_IMAGENET22K_V1'):
+                    weights = weights_enum.KINETICS400_IMAGENET22K_V1 if pretrained else None
+                else:
+                    weights = None
+
+                self.model = video_models.mvit_v1_b(weights=weights)
+                print("✅ Loaded torchvision mvit_v1_b (weights={} )".format('pretrained' if weights else 'random'))
+                return
+            except Exception as e:
+                print(f"Failed to load torchvision mvit_v1_b: {e}")
+
+        print("Failed to find MViT in current torchvision. Trying PyTorchVideo...")
         
-        try:
-            # Try string-based loading
-            self.model = video_models.mvit_v2_b(weights='KINETICS400_V1')
-            print("✅ Loaded MViTv2-B with KINETICS400_V1 weights")
-            return
-        except Exception as e:
-            print(f"Failed to load KINETICS400_V1: {e}")
-        
-        # Final fallback - try PyTorchVideo
         try:
             self._load_from_pytorchvideo()
         except Exception as e:
             print(f"Failed to load from PyTorchVideo: {e}")
             print("⚠️  Using random initialization")
-            self.model = video_models.mvit_v2_b(weights=None)
+            if hasattr(video_models, 'mvit_v2_b'):
+                self.model = video_models.mvit_v2_b(weights=None)
+            elif hasattr(video_models, 'mvit_v1_b'):
+                self.model = video_models.mvit_v1_b(weights=None)
+            else:
+                self.model = nn.Identity()  # type: ignore
     
     def _load_from_pytorchvideo(self):
         """Fallback: Load from PyTorchVideo if torchvision version is too old."""
@@ -116,8 +124,15 @@ class VideoMViTBackbone(nn.Module):
             # Load pytorchvideo model
             pv_model = hub.mvit_base_16x4(pretrained=True)
             
-            # Create torchvision model without weights
-            self.model = video_models.mvit_v2_b(weights=None)
+            # Create placeholder backbone in torchvision if available otherwise construct simple nn.Identity
+            if hasattr(video_models, 'mvit_v2_b'):
+                self.model = video_models.mvit_v2_b(weights=None)
+            elif hasattr(video_models, 'mvit_v1_b'):
+                self.model = video_models.mvit_v1_b(weights=None)
+            else:
+                print("⚠️  No MViT architecture in torchvision – replacing with Identity backbone (features only)")
+                from torch import nn
+                self.model = nn.Identity()
             
             # Map weights from pytorchvideo to torchvision format
             self._map_pytorchvideo_weights(pv_model.state_dict())
@@ -127,11 +142,23 @@ class VideoMViTBackbone(nn.Module):
         except ImportError:
             print("❌ PyTorchVideo not available. Install with: pip install pytorchvideo")
             print("Using random initialization...")
-            self.model = video_models.mvit_v2_b(weights=None)
+            if hasattr(video_models, 'mvit_v2_b'):
+                self.model = video_models.mvit_v2_b(weights=None)
+            elif hasattr(video_models, 'mvit_v1_b'):
+                self.model = video_models.mvit_v1_b(weights=None)
+            else:
+                from torch import nn
+                self.model = nn.Identity()  # type: ignore
         except Exception as e:
             print(f"❌ PyTorchVideo loading failed: {e}")
             print("Using random initialization...")
-            self.model = video_models.mvit_v2_b(weights=None)
+            if hasattr(video_models, 'mvit_v2_b'):
+                self.model = video_models.mvit_v2_b(weights=None)
+            elif hasattr(video_models, 'mvit_v1_b'):
+                self.model = video_models.mvit_v1_b(weights=None)
+            else:
+                from torch import nn
+                self.model = nn.Identity()  # type: ignore
     
     def _map_pytorchvideo_weights(self, pv_state_dict):
         """Map PyTorchVideo MViT weights to torchvision format."""

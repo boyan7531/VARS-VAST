@@ -84,6 +84,22 @@ def build_backbone(
             **kwargs
         )
         
+    elif arch.lower() in ['mvitv2_b', 'mvitv2', 'mvitv2_base']:
+        from .timm_mvit_backbone import build_timm_mvit_backbone as _builder
+
+        print("  Architecture: Video MViTv2-B (timm)")
+        print("  Parameters: ~52M")
+        print("  Memory: ~8GB VRAM @ BS=1")
+        print("  Strengths: Efficiency, larger than v2_s")
+
+        return _builder(
+            pretrained=pretrained,
+            return_pooled=return_pooled,
+            freeze_mode=freeze_mode,
+            checkpointing=checkpointing,
+            **kwargs
+        )
+        
     else:
         available_archs = ['swin', 'mvit']
         raise ValueError(

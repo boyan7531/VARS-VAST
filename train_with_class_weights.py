@@ -727,8 +727,9 @@ def main():
     parser.add_argument('--freeze-mode', type=str, default='gradual', help='Backbone freeze mode')
     
     # Backbone architecture
-    parser.add_argument('--backbone-arch', type=str, default='swin', choices=['swin', 'mvit'],
-                        help='Backbone architecture to use (swin or mvit)')
+    parser.add_argument('--backbone-arch', type=str, default='swin',
+                        choices=['swin', 'mvit', 'mvitv2_b', 'mvitv2', 'mvitv2_base', 'mvit_v1_b'],
+                        help='Backbone architecture (swin, mvit, or timm MViT variants)')
     
     # Balance-specific arguments (Option A: WeightedRandomSampler + CrossEntropy)
     parser.add_argument('--analyze-only', action='store_true', help='Only analyze imbalance, dont train')

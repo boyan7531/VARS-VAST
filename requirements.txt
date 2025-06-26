@@ -47,3 +47,5 @@ pathlib2>=2.3.0  # Enhanced pathlib functionality
 # pytest>=6.0.0
 # black>=22.0.0
 # flake8>=4.0.0
+SoccerNet
+timm
