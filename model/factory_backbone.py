@@ -9,6 +9,18 @@ Currently supports:
 """
 
 from typing import Union
+import typing
+
+# Ensure type names are available at runtime for get_type_hints or similar reflection
+try:
+    from .backbone import VideoSwinBackbone  # noqa: F401
+except Exception:
+    VideoSwinBackbone = None  # type: ignore
+
+try:
+    from .mvit_backbone import VideoMViTBackbone  # noqa: F401
+except Exception:
+    VideoMViTBackbone = None  # type: ignore
 
 
 def build_backbone(
@@ -18,7 +30,7 @@ def build_backbone(
     freeze_mode: str = 'none',
     checkpointing: bool = False,
     **kwargs
-) -> Union['VideoSwinBackbone', 'VideoMViTBackbone']:
+) -> 'typing.Any':
     """
     Factory function to build video backbone architectures.
     
@@ -39,7 +51,8 @@ def build_backbone(
     print(f"Building {arch.upper()} backbone...")
     
     if arch.lower() == 'swin':
-        from .backbone import VideoSwinBackbone
+        if VideoSwinBackbone is None:
+            raise ValueError("VideoSwinBackbone is not available")
         
         print("  Architecture: Video Swin B")
         print("  Parameters: ~88M")
@@ -55,7 +68,8 @@ def build_backbone(
         )
         
     elif arch.lower() == 'mvit':
-        from .mvit_backbone import VideoMViTBackbone
+        if VideoMViTBackbone is None:
+            raise ValueError("VideoMViTBackbone is not available")
         
         print("  Architecture: Video MViTv2-B")
         print("  Parameters: ~52M")
