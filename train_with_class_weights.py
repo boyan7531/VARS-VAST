@@ -144,8 +144,9 @@ def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule:
             train_dataset = trainer.train_loader.dataset
             val_dataset = trainer.val_loader.dataset
             
-            # CRITICAL FIX: Preserve the original sampler to maintain balanced sampling
+            # Preserve the original sampler AND collate_fn to maintain behaviour
             original_sampler = trainer.train_loader.sampler
+            original_collate = trainer.train_loader.collate_fn
             
             # Create new data loaders with reduced batch size
             from torch.utils.data import DataLoader
@@ -160,7 +161,8 @@ def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule:
                     shuffle=False,  # Must be False when using custom sampler
                     num_workers=4, 
                     pin_memory=True,
-                    drop_last=True
+                    drop_last=True,
+                    collate_fn=original_collate
                 )
                 logger.info(f"   ✅ Preserved WeightedRandomSampler for balanced training")
             else:
@@ -171,7 +173,8 @@ def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule:
                     shuffle=True, 
                     num_workers=4, 
                     pin_memory=True,
-                    drop_last=True
+                    drop_last=True,
+                    collate_fn=original_collate
                 )
                 logger.info(f"   ⚠️  No custom sampler detected, using shuffle=True")
             
@@ -180,7 +183,8 @@ def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule:
                 batch_size=args.unfreeze_batch_size, 
                 shuffle=False, 
                 num_workers=4, 
-                pin_memory=True
+                pin_memory=True,
+                collate_fn=original_collate
             )
             
             logger.info(f"   ✅ Updated data loaders with batch size {args.unfreeze_batch_size}")
