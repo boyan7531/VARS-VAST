@@ -66,7 +66,12 @@ def predict_distribution(
     counts = {t: np.zeros(nc, dtype=int) for t, nc in zip(task_names, n_classes)}
 
     with torch.no_grad():
-        for videos, _ in tqdm(loader, desc="Inference"):
+        for batch in tqdm(loader, desc="Inference"):
+            # Support both single-clip (videos, targets) and bag-of-clips
+            if isinstance(batch, (list, tuple)) and len(batch) >= 1:
+                videos = batch[0]
+            else:
+                videos = batch  # fallback
             videos = videos.to(device)
             logits_dict, _ = model(videos, return_dict=True)
             for t in task_names:
