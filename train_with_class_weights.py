@@ -406,6 +406,7 @@ def create_balanced_model(
     class_weight_cap: float = 10.0,
     loss_types_per_task: Optional[Dict[str, str]] = None,
     use_effective_weights: bool = False,
+    freeze_mode: str = 'gradual',
     **model_kwargs
 ) -> MVFoulsModel:
     """
@@ -486,7 +487,7 @@ def create_balanced_model(
         # Create multi-task model with flexible loss configuration
         model = build_multi_task_model(
             backbone_pretrained=True,
-            backbone_freeze_mode='gradual',
+            backbone_freeze_mode=freeze_mode,
             loss_types_per_task=loss_types_list,  # Pass the list format expected by model
             class_weights=task_weights,
             task_loss_weights=primary_task_weights,
@@ -534,7 +535,7 @@ def create_balanced_model(
         model = build_single_task_model(
             num_classes=2,
             backbone_pretrained=True,
-            backbone_freeze_mode='gradual',
+            backbone_freeze_mode=freeze_mode,
             head_loss_type='ce',  # Always use CrossEntropy
             class_weights=class_weights,
             backbone_checkpointing=backbone_checkpointing,
@@ -740,7 +741,7 @@ def main():
                        help='Batch size to use after backbone unfreezing starts (default: 3)')
     parser.add_argument('--gradient-accumulation-steps', type=int, default=1,
                         help='Number of steps to accumulate gradients before optimizer step (default: 1)')
-    parser.add_argument('--num-workers', type=int, default=4,
+    parser.add_argument('--num-workers', type=int, default=10,
                         help='Number of worker processes for data loading (default: 4)')
     
     # Other arguments
@@ -1054,7 +1055,8 @@ def main():
             loss_types_per_task=loss_types_per_task,  # New: per-task loss configuration
             use_effective_weights=args.effective_class_weights,  # New: effective number class weights
             clip_pooling_type=args.clip_pooling_type,
-            clip_pooling_temperature=args.clip_pooling_temperature
+            clip_pooling_temperature=args.clip_pooling_temperature,
+            freeze_mode=args.freeze_mode
         )
         
         # Log bag-of-clips configuration
