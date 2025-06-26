@@ -52,9 +52,9 @@ class VideoTimmMViTBackbone(nn.Module):
         self._build_groups()
         self.set_freeze(freeze_mode)
 
-        # Disable timm's internal gradient checkpointing completely
+        # Configure timm's internal gradient checkpointing based on flag
         if hasattr(self.model, "set_grad_checkpointing"):
-            self.model.set_grad_checkpointing(False)
+            self.model.set_grad_checkpointing(checkpointing)
 
         self.out_dim = self.model.num_features
         
