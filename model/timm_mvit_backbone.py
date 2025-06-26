@@ -10,6 +10,7 @@ from typing import List, Optional
 
 import torch
 import torch.nn as nn
+import importlib, sys, types
 
 try:
     import timm
@@ -32,11 +33,18 @@ class VideoTimmMViTBackbone(nn.Module):
         # ---------------------------------------------------------------------
         # Build timm model (no classifier / no pooling)
         # ---------------------------------------------------------------------
+        self._fix_checkpoint_import()
+        
         self.model = timm.create_model(
-            "mvitv2_base", pretrained=pretrained, num_classes=0, global_pool=""
+            "mvitv2_base", 
+            pretrained=pretrained, 
+            num_classes=0, 
+            global_pool=""
         )
 
-        self.return_pooled = return_pooled
+        # Force pooled output to be compatible with existing head architecture
+        # The head expects a single feature vector per frame, not unpooled tokens
+        self.return_pooled = True
         self.freeze_mode = freeze_mode
         self._current = -1  # for gradual mode
 
@@ -44,11 +52,53 @@ class VideoTimmMViTBackbone(nn.Module):
         self._build_groups()
         self.set_freeze(freeze_mode)
 
-        # Allow optional checkpointing (timm natively supports it via set_grad_checkpointing)
-        if checkpointing and hasattr(self.model, "set_grad_checkpointing"):
-            self.model.set_grad_checkpointing()
+        # Disable timm's internal gradient checkpointing completely
+        if hasattr(self.model, "set_grad_checkpointing"):
+            self.model.set_grad_checkpointing(False)
 
         self.out_dim = self.model.num_features
+        
+        # Test forward pass to determine actual output shape and ensure correct out_dim
+        with torch.no_grad():
+            test_input = torch.randn(1, 3, 224, 224)
+            test_output = self.model.forward_features(test_input)
+            if isinstance(test_output, (list, tuple)):
+                test_output = test_output[-1]
+            
+            if test_output.dim() == 3:  # (B, tokens, C) - need to pool
+                self.out_dim = test_output.shape[-1]  # Use actual feature dimension from tokens
+            elif test_output.dim() == 2:  # (B, C) - already pooled
+                self.out_dim = test_output.shape[-1]
+
+    def _fix_checkpoint_import(self):
+        """
+        Robust fix for timm's checkpoint import issue.
+        
+        timm expects 'from torch.utils import checkpoint' to give a module
+        with checkpoint.checkpoint function, but sometimes gets the function directly.
+        """
+        import torch.utils as torch_utils
+        
+        # Ensure torch.utils.checkpoint is imported as a module
+        try:
+            checkpoint_module = importlib.import_module("torch.utils.checkpoint")
+            # Force torch.utils.checkpoint to be the module, not the function
+            torch_utils.checkpoint = checkpoint_module
+        except Exception:
+            pass
+            
+        # Additional monkey-patch: if timm still has issues, create a mock
+        try:
+            import timm.models.mvitv2 as mvitv2_module
+            if hasattr(mvitv2_module, 'checkpoint'):
+                # If checkpoint is a function, wrap it in a module-like object
+                if callable(mvitv2_module.checkpoint) and not hasattr(mvitv2_module.checkpoint, 'checkpoint'):
+                    class CheckpointWrapper:
+                        def __init__(self, checkpoint_fn):
+                            self.checkpoint = checkpoint_fn
+                    mvitv2_module.checkpoint = CheckpointWrapper(mvitv2_module.checkpoint)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Freeze / unfreeze helpers (similar interface to other backbones)
@@ -123,23 +173,48 @@ class VideoTimmMViTBackbone(nn.Module):
             if isinstance(features, (list, tuple)):
                 features = features[-1]
 
-            # Pool tokens if needed
-            if features.dim() == 3:  # (B*T, tokens, C)
+            # Handle different output formats
+            if features.dim() == 3:  # (B*T, tokens, C) - unpooled tokens
                 if self.return_pooled:
+                    # Global average pooling over spatial tokens
                     features = features.mean(dim=1)  # (B*T, C)
-            # Reshape back to (B, T, ...)
-            features = features.view(B, T, -1)  # (B, T, C)
+                else:
+                    # Flatten spatial tokens
+                    features = features.view(B * T, -1)  # (B*T, tokens*C)
+            elif features.dim() == 2:  # (B*T, C) - already pooled
+                pass  # Use as-is
+            else:
+                # Flatten any unexpected dimensions
+                features = features.view(B * T, -1)
+                
+            # Get the actual feature dimension
+            feat_dim = features.shape[-1]
+            
+            # Reshape back to (B, T, feat_dim)
+            features = features.view(B, T, feat_dim)
 
             if self.return_pooled:
-                features = features.mean(dim=1)  # (B, C)
+                # Temporal pooling
+                features = features.mean(dim=1)  # (B, feat_dim)
             return features
 
         # Fallback for 4D input
         features = self.model.forward_features(x)  # shape (B, tokens, C) or (B, C)
         if isinstance(features, (list, tuple)):
             features = features[-1]
-        if features.dim() == 3 and self.return_pooled:
-            features = features.mean(dim=1)
+            
+        # Handle different output formats for 4D input
+        if features.dim() == 3:  # (B, tokens, C)
+            if self.return_pooled:
+                features = features.mean(dim=1)  # (B, C)
+            else:
+                features = features.view(features.shape[0], -1)  # (B, tokens*C)
+        elif features.dim() == 2:  # (B, C)
+            pass  # Already pooled
+        else:
+            # Flatten unexpected dimensions
+            features = features.view(features.shape[0], -1)
+            
         return features
 
     # Convenience getters
