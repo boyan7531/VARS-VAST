@@ -427,7 +427,7 @@ class VideoSwinBackbone(nn.Module):
         }
 
 
-def build_backbone(
+def build_swin_backbone(
     pretrained: bool = True,
     return_pooled: bool = True,
     freeze_mode: str = 'none',
@@ -445,26 +445,38 @@ def build_backbone(
     Returns:
         Configured VideoSwinBackbone instance
     """
-    print("Building Video Swin B backbone...")
-    print(f"  Pretrained: {pretrained}")
-    if pretrained:
-        print(f"  Using Kinetics-600 weights (downloaded from official repo)")
-    print(f"  Return pooled: {return_pooled}")
-    print(f"  Freeze mode: {freeze_mode}")
-    print(f"  Checkpointing: {checkpointing}")
-    print()
-    
-    backbone = VideoSwinBackbone(
+    return VideoSwinBackbone(
         pretrained=pretrained,
         return_pooled=return_pooled,
         freeze_mode=freeze_mode,
         checkpointing=checkpointing
     )
-    
-    print("Backbone built successfully!")
-    print()
-    
-    return backbone
+
+
+# Backward compatibility alias
+def build_backbone(
+    pretrained: bool = True,
+    return_pooled: bool = True,
+    freeze_mode: str = 'none',
+    checkpointing: bool = False
+) -> VideoSwinBackbone:
+    """
+    DEPRECATED: Use build_swin_backbone() or the generalized factory_backbone.build_backbone().
+    Kept for backward compatibility.
+    """
+    import warnings
+    warnings.warn(
+        "build_backbone() from backbone.py is deprecated. "
+        "Use build_swin_backbone() or factory_backbone.build_backbone(arch='swin').",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    return build_swin_backbone(
+        pretrained=pretrained,
+        return_pooled=return_pooled,
+        freeze_mode=freeze_mode,
+        checkpointing=checkpointing
+    )
 
 
 # Example usage and testing

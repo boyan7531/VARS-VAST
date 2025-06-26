@@ -401,6 +401,7 @@ def create_balanced_model(
     multi_task: bool = True,
     imbalance_analysis: Optional[Dict] = None,
     primary_task_weights: Optional[Dict[str, float]] = None,
+    backbone_arch: str = 'swin',
     backbone_checkpointing: bool = True,
     use_class_weights: bool = True,
     class_weight_cap: float = 10.0,
@@ -486,6 +487,7 @@ def create_balanced_model(
         
         # Create multi-task model with flexible loss configuration
         model = build_multi_task_model(
+            backbone_arch=backbone_arch,
             backbone_pretrained=True,
             backbone_freeze_mode=freeze_mode,
             loss_types_per_task=loss_types_list,  # Pass the list format expected by model
@@ -534,6 +536,7 @@ def create_balanced_model(
         
         model = build_single_task_model(
             num_classes=2,
+            backbone_arch=backbone_arch,
             backbone_pretrained=True,
             backbone_freeze_mode=freeze_mode,
             head_loss_type='ce',  # Always use CrossEntropy
@@ -722,6 +725,10 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--weight-decay', type=float, default=1e-4, help='Weight decay')
     parser.add_argument('--freeze-mode', type=str, default='gradual', help='Backbone freeze mode')
+    
+    # Backbone architecture
+    parser.add_argument('--backbone-arch', type=str, default='swin', choices=['swin', 'mvit'],
+                        help='Backbone architecture to use (swin or mvit)')
     
     # Balance-specific arguments (Option A: WeightedRandomSampler + CrossEntropy)
     parser.add_argument('--analyze-only', action='store_true', help='Only analyze imbalance, dont train')
@@ -1056,7 +1063,8 @@ def main():
             use_effective_weights=args.effective_class_weights,  # New: effective number class weights
             clip_pooling_type=args.clip_pooling_type,
             clip_pooling_temperature=args.clip_pooling_temperature,
-            freeze_mode=args.freeze_mode
+            freeze_mode=args.freeze_mode,
+            backbone_arch=args.backbone_arch
         )
         
         # Log bag-of-clips configuration

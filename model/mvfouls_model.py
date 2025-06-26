@@ -20,7 +20,8 @@ from collections import OrderedDict
 import warnings
 
 # Import components
-from .backbone import VideoSwinBackbone, build_backbone
+from .backbone import VideoSwinBackbone, build_backbone as build_swin_backbone
+from .factory_backbone import build_backbone
 from .head import MVFoulsHead, build_head, build_multi_task_head
 
 # Import utilities
@@ -61,6 +62,7 @@ class MVFoulsModel(nn.Module):
     def __init__(
         self,
         # Backbone configuration
+        backbone_arch: str = 'swin',
         backbone_pretrained: bool = True,
         backbone_freeze_mode: str = 'none',
         backbone_checkpointing: bool = False,
@@ -95,7 +97,8 @@ class MVFoulsModel(nn.Module):
         Initialize the complete MVFouls model.
         
         Args:
-            backbone_pretrained: Whether to use pretrained Video Swin weights
+            backbone_arch: Backbone architecture ('swin', 'mvit')
+            backbone_pretrained: Whether to use pretrained backbone weights
             backbone_freeze_mode: Backbone freeze strategy ('none', 'freeze_all', 'freeze_stages{k}', 'gradual')
             backbone_checkpointing: Enable gradient checkpointing in backbone
             
@@ -124,6 +127,7 @@ class MVFoulsModel(nn.Module):
         
         # Store configuration
         self.config = {
+            'backbone_arch': backbone_arch,
             'backbone_pretrained': backbone_pretrained,
             'backbone_freeze_mode': backbone_freeze_mode,
             'backbone_checkpointing': backbone_checkpointing,
@@ -151,8 +155,9 @@ class MVFoulsModel(nn.Module):
         self.task_focal_gamma_map = task_focal_gamma_map
         
         # Build backbone
-        print("Building backbone...")
+        print(f"Building {backbone_arch.upper()} backbone...")
         self.backbone = build_backbone(
+            arch=backbone_arch,
             pretrained=backbone_pretrained,
             return_pooled=head_pooling is None,  # If head has no pooling, backbone should return pooled features
             freeze_mode=backbone_freeze_mode,
@@ -885,7 +890,8 @@ class MVFoulsModel(nn.Module):
         else:
             print(f"  Classes: {self.config['num_classes']}")
         
-        print(f"  Backbone: Video Swin B ({'pretrained' if self.config['backbone_pretrained'] else 'random init'})")
+        arch_name = self.config.get('backbone_arch', 'swin').upper()
+        print(f"  Backbone: {arch_name} ({'pretrained' if self.config['backbone_pretrained'] else 'random init'})")
         print(f"  Freeze mode: {self.config['backbone_freeze_mode']}")
         print(f"  Head pooling: {self.config['head_pooling']}")
         print(f"  Temporal module: {self.config['head_temporal_module']}")
@@ -949,6 +955,7 @@ def build_mvfouls_model(**kwargs) -> MVFoulsModel:
 
 def build_single_task_model(
     num_classes: int = 2,
+    backbone_arch: str = 'swin',
     backbone_pretrained: bool = True,
     backbone_freeze_mode: str = 'none',
     **kwargs
@@ -958,6 +965,7 @@ def build_single_task_model(
     
     Args:
         num_classes: Number of classes
+        backbone_arch: Backbone architecture ('swin', 'mvit')
         backbone_pretrained: Use pretrained backbone
         backbone_freeze_mode: Backbone freeze mode ('none', 'freeze_all', etc.)
         **kwargs: Additional arguments
@@ -966,6 +974,7 @@ def build_single_task_model(
         Single-task MVFoulsModel
     """
     return MVFoulsModel(
+        backbone_arch=backbone_arch,
         backbone_pretrained=backbone_pretrained,
         backbone_freeze_mode=backbone_freeze_mode,
         num_classes=num_classes,
@@ -975,6 +984,7 @@ def build_single_task_model(
 
 
 def build_multi_task_model(
+    backbone_arch: str = 'swin',
     backbone_pretrained: bool = True,
     backbone_freeze_mode: str = 'none',
     **kwargs
@@ -983,6 +993,7 @@ def build_multi_task_model(
     Build multi-task MVFouls model with automatic task detection.
     
     Args:
+        backbone_arch: Backbone architecture ('swin', 'mvit')
         backbone_pretrained: Use pretrained backbone
         backbone_freeze_mode: Backbone freeze mode ('none', 'freeze_all', etc.)
         **kwargs: Additional arguments
@@ -994,6 +1005,7 @@ def build_multi_task_model(
         raise ImportError("Multi-task model requires task metadata from utils.py")
     
     return MVFoulsModel(
+        backbone_arch=backbone_arch,
         backbone_pretrained=backbone_pretrained,
         backbone_freeze_mode=backbone_freeze_mode,
         multi_task=True,
