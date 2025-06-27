@@ -297,10 +297,10 @@ class VideoMMAction2MViTBackbone(nn.Module):
                 
                 # Try multiple download sources in order of preference
                 download_urls = [
-                    # Primary: PyTorchVideo CDN (sometimes blocked)
+                    # Primary: PySlowFast model zoo (recommended)
+                    "https://dl.fbaipublicfiles.com/pyslowfast/model_zoo/mvitv2/pysf_video_models/MViTv2_B_32x3_k400_f304025456.pyth",
+                    # Fallback: PyTorchVideo CDN (sometimes blocked)
                     "https://dl.fbaipublicfiles.com/pytorchvideo/model_zoo/mvit/v2/MViTv2_B_32x3_k400_fps50.pyth",
-                    # Alternative: Try direct GitHub releases (if available)
-                    # "https://github.com/facebookresearch/pytorchvideo/releases/download/v0.1.5/MViTv2_B_32x3_k400_fps50.pyth",
                 ]
                 
                 download_success = False
@@ -325,16 +325,16 @@ class VideoMMAction2MViTBackbone(nn.Module):
                     print("Please download the checkpoint manually using one of these methods:")
                     print("\n🔧 OPTION 1: Manual download with curl (recommended)")
                     print("Run this command in your terminal:")
-                    print(f'curl -L -o "{checkpoint_path}" "https://dl.fbaipublicfiles.com/pytorchvideo/model_zoo/mvit/v2/MViTv2_B_32x3_k400_fps50.pyth"')
+                    print(f'curl -L -o "{checkpoint_path}" "https://dl.fbaipublicfiles.com/pyslowfast/model_zoo/mvitv2/pysf_video_models/MViTv2_B_32x3_k400_f304025456.pyth"')
                     
                     print("\n🔧 OPTION 2: Browser download")
                     print("1. Open this URL in your browser:")
-                    print("   https://dl.fbaipublicfiles.com/pytorchvideo/model_zoo/mvit/v2/MViTv2_B_32x3_k400_fps50.pyth")
+                    print("   https://dl.fbaipublicfiles.com/pyslowfast/model_zoo/mvitv2/pysf_video_models/MViTv2_B_32x3_k400_f304025456.pyth")
                     print(f"2. Save the file as: {checkpoint_path}")
                     
                     print("\n🔧 OPTION 3: Use wget")
                     print("Run this command in your terminal:")
-                    print(f'wget -O "{checkpoint_path}" "https://dl.fbaipublicfiles.com/pytorchvideo/model_zoo/mvit/v2/MViTv2_B_32x3_k400_fps50.pyth"')
+                    print(f'wget -O "{checkpoint_path}" "https://dl.fbaipublicfiles.com/pyslowfast/model_zoo/mvitv2/pysf_video_models/MViTv2_B_32x3_k400_f304025456.pyth"')
                     
                     print("\n🔧 OPTION 4: Alternative model")
                     print("Consider using ImageNet pre-trained weights instead:")
@@ -351,9 +351,11 @@ class VideoMMAction2MViTBackbone(nn.Module):
         try:
             checkpoint = torch.load(checkpoint_path, map_location='cpu')
             
-            # Extract state dict (MMAction2 format may have nested structure)
-            if 'state_dict' in checkpoint:
-                state_dict = checkpoint['state_dict']
+            # Extract state dict (PySlowFast/MMAction2 format may have nested structure)
+            if 'model_state' in checkpoint:
+                state_dict = checkpoint['model_state']  # PySlowFast format
+            elif 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']  # MMAction2 format
             elif 'model' in checkpoint:
                 state_dict = checkpoint['model']
             else:
@@ -376,7 +378,7 @@ class VideoMMAction2MViTBackbone(nn.Module):
             if unexpected_keys:
                 print(f"Unexpected keys when loading checkpoint: {unexpected_keys[:10]}...")  # Show first 10
                 
-            print("Successfully loaded PyTorchVideo Kinetics-400 pre-trained weights")
+            print("Successfully loaded PySlowFast Kinetics-400 pre-trained weights")
             
         except Exception as e:
             print(f"Failed to load checkpoint: {e}")

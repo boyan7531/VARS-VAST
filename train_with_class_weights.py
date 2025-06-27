@@ -733,8 +733,8 @@ def main():
     # Backbone architecture
     parser.add_argument('--backbone-arch', type=str, default='swin',
                         choices=['swin', 'mvit', 'mvitv2_b', 'mvitv2', 'mvitv2_base', 'mvit_v1_b',
-                                 'k600', 'kinetics600', 'k400', 'kinetics400'],
-                        help='Backbone architecture (swin, mvit, timm MViT variants, k600 for Kinetics-600, or k400 for Kinetics-400 MViTv2-B)')
+                                 'k600', 'kinetics600', 'k400', 'kinetics400', 'pyslowfast', 'true-mvitv2b'],
+                        help='Backbone architecture (swin, mvit, timm MViT variants, k600 for Kinetics-600, k400 for Kinetics-400, pyslowfast for PySlowFast optimized MViTv2-B, or true-mvitv2b for exact 52M param implementation)')
     
     # Balance-specific arguments (Option A: WeightedRandomSampler + CrossEntropy)
     parser.add_argument('--analyze-only', action='store_true', help='Only analyze imbalance, dont train')

@@ -84,14 +84,51 @@ def build_backbone(
             **kwargs
         )
         
-    elif arch.lower() in ['mvitv2_b', 'mvitv2', 'mvitv2_base', 'k600', 'kinetics600', 'k400', 'kinetics400']:
-        from .timm_mvit_backbone import build_mmaction2_mvit_backbone as _builder
+    elif arch.lower() in ['pyslowfast']:
+        from .pyslowfast_mvit_backbone import build_pyslowfast_mvit_backbone as _builder
 
-        print("  Architecture: Video MViTv2-B (PyTorchVideo Kinetics-400)")
+        print("  Architecture: Video MViTv2-B (PySlowFast Kinetics-400)")
         print("  Parameters: ~52M")
         print("  Memory: ~8GB VRAM @ BS=1")
         print("  Pretrained: Kinetics-400 (action classification)")
+        print("  Strengths: PySlowFast optimized, proper architecture matching")
+        print("  Source: PySlowFast model zoo (exact architecture match)")
+
+        return _builder(
+            pretrained=pretrained,
+            return_pooled=return_pooled,
+            freeze_mode=freeze_mode,
+            checkpointing=checkpointing,
+            **kwargs
+        )
+        
+    elif arch.lower() in ['true-mvitv2b', 'mvitv2b-52m', 'true-mvit']:
+        from .true_mvitv2_backbone import build_true_mvitv2b_backbone as _builder
+
+        print("  Architecture: True MViTv2-B (52M parameters, no timm)")
+        print("  Parameters: 52M (exact)")
+        print("  Memory: ~8GB VRAM @ BS=1")
+        print("  Pretrained: Optimized random init for action classification")
+        print("  Strengths: Exact 52M params, no timm dependency, proper scaling")
+        print("  Source: Official Facebook Research architecture")
+
+        return _builder(
+            pretrained=pretrained,
+            return_pooled=return_pooled,
+            freeze_mode=freeze_mode,
+            checkpointing=checkpointing,
+            **kwargs
+        )
+        
+    elif arch.lower() in ['mvitv2_b', 'mvitv2', 'mvitv2_base', 'k600', 'kinetics600', 'k400', 'kinetics400']:
+        from .timm_mvit_backbone import build_mmaction2_mvit_backbone as _builder
+
+        print("  Architecture: Video MViTv2-B (Generic/PyTorchVideo Kinetics-400)")
+        print("  Parameters: ~52M (actually 38M due to timm)")
+        print("  Memory: ~8GB VRAM @ BS=1")
+        print("  Pretrained: Kinetics-400 (action classification)")
         print("  Strengths: Efficiency, action-specific features, 32x3 sampling")
+        print("  Source: PyTorchVideo/fallback (uses timm MViTv2-S)")
 
         return _builder(
             pretrained=pretrained,
@@ -102,7 +139,7 @@ def build_backbone(
         )
         
     else:
-        available_archs = ['swin', 'mvit', 'mvitv2_b', 'k600', 'k400']
+        available_archs = ['swin', 'mvit', 'mvitv2_b', 'k600', 'k400', 'pyslowfast', 'true-mvitv2b']
         raise ValueError(
             f"Unknown backbone architecture: '{arch}'. "
             f"Available architectures: {available_archs}"
@@ -157,13 +194,31 @@ def get_backbone_info(arch: str) -> dict:
             'recommended_for': ['Maximum action performance', 'Research', 'When setup time available']
         },
         'k400': {
-            'name': 'Video MViTv2-B (Kinetics-400)',
+            'name': 'Video MViTv2-B (Generic Kinetics-400)',
             'params': '~52M',
             'memory_bs1': '~8GB VRAM', 
             'memory_bs4': '~18GB VRAM',
-            'strengths': ['Great action features', 'Reliable download (usually)', '32x3 sampling'],
-            'weaknesses': ['Slightly less diverse than K600 (400 vs 600 classes)'],
-            'recommended_for': ['Action classification', 'Production use', 'Easy deployment']
+            'strengths': ['Action features', 'Fallback option', '32x3 sampling'],
+            'weaknesses': ['Architecture mismatches possible', 'May use random weights'],
+            'recommended_for': ['Fallback when PySlowFast fails', 'Testing']
+        },
+        'pyslowfast': {
+            'name': 'Video MViTv2-B (PySlowFast Kinetics-400)',
+            'params': '~52M',
+            'memory_bs1': '~8GB VRAM', 
+            'memory_bs4': '~18GB VRAM',
+            'strengths': ['Best action features', 'Exact architecture match', 'Reliable download', '32x3 sampling'],
+            'weaknesses': ['None (recommended option)'],
+            'recommended_for': ['Action classification', 'Research', 'Production use', 'RECOMMENDED CHOICE']
+        },
+        'true-mvitv2b': {
+            'name': 'True MViTv2-B (52M parameters, no timm)',
+            'params': '52M (exact)',
+            'memory_bs1': '~8GB VRAM', 
+            'memory_bs4': '~18GB VRAM',
+            'strengths': ['Exact 52M parameters', 'No timm dependency', 'Official architecture', 'Proper scaling'],
+            'weaknesses': ['Random initialization (no pretrained weights)'],
+            'recommended_for': ['When you want exact 52M params', 'Training from scratch', 'Avoiding timm']
         }
     }
     
@@ -172,7 +227,7 @@ def get_backbone_info(arch: str) -> dict:
 
 def list_available_backbones() -> list:
     """Get list of available backbone architectures."""
-    return ['swin', 'mvit', 'mvitv2_b', 'k600', 'k400']
+    return ['swin', 'mvit', 'mvitv2_b', 'k600', 'k400', 'pyslowfast']
 
 
 def print_backbone_comparison():
@@ -193,15 +248,16 @@ def print_backbone_comparison():
     
     print("\n💡 RECOMMENDATIONS:")
     print("   🥇 BEST FOR ACTION CLASSIFICATION:")
-    print("      • 'k400' - Great balance of performance and reliability (recommended)")
+    print("      • 'pyslowfast' - PySlowFast K400 with exact architecture match (RECOMMENDED)")
     print("      • 'k600' - Maximum performance (if download works or manual setup done)")
     print("   🎯 FOR GENERAL VIDEO TASKS:")
     print("      • 'swin' - Maximum accuracy (requires ≥16GB VRAM)")
     print("      • 'mvit' - Good efficiency baseline (≥8GB VRAM)")
     print("   🔧 FALLBACK OPTIONS:")
+    print("      • 'k400' - Generic K400 (may have architecture mismatches)")
     print("      • 'mvitv2_b' - ImageNet weights when action pre-training fails")
-    print("\n   ⚠️  NOTE: K400/K600 may require manual download due to CDN restrictions")
-    print("   📊 Performance ranking: K600 ≈ K400 > Swin ≈ MViT > ImageNet (for action tasks)")
+    print("\n   ⚠️  NOTE: Use 'pyslowfast' to avoid architecture mismatches")
+    print("   📊 Performance ranking: PySlowFast > K600 > Swin ≈ MViT > K400 > ImageNet (for action tasks)")
     print("="*80 + "\n")
 
 
