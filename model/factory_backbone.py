@@ -84,13 +84,14 @@ def build_backbone(
             **kwargs
         )
         
-    elif arch.lower() in ['mvitv2_b', 'mvitv2', 'mvitv2_base']:
-        from .timm_mvit_backbone import build_timm_mvit_backbone as _builder
+    elif arch.lower() in ['mvitv2_b', 'mvitv2', 'mvitv2_base', 'k600', 'kinetics600']:
+        from .timm_mvit_backbone import build_mmaction2_mvit_backbone as _builder
 
-        print("  Architecture: Video MViTv2-B (timm)")
+        print("  Architecture: Video MViTv2-B (MMAction2 Kinetics-600)")
         print("  Parameters: ~52M")
         print("  Memory: ~8GB VRAM @ BS=1")
-        print("  Strengths: Efficiency, larger than v2_s")
+        print("  Pretrained: Kinetics-600 (action classification)")
+        print("  Strengths: Efficiency, action-specific features, 32x3 sampling")
 
         return _builder(
             pretrained=pretrained,
@@ -101,7 +102,7 @@ def build_backbone(
         )
         
     else:
-        available_archs = ['swin', 'mvit']
+        available_archs = ['swin', 'mvit', 'mvitv2_b', 'k600']
         raise ValueError(
             f"Unknown backbone architecture: '{arch}'. "
             f"Available architectures: {available_archs}"
@@ -136,6 +137,24 @@ def get_backbone_info(arch: str) -> dict:
             'strengths': ['Memory efficient', 'Faster inference', 'Good accuracy'],
             'weaknesses': ['Slightly lower accuracy than Swin', 'Newer architecture'],
             'recommended_for': ['Limited compute', 'Production deployment', 'Efficiency requirements']
+        },
+        'mvitv2_b': {
+            'name': 'Video MViTv2-B (Kinetics-600)',
+            'params': '~52M',
+            'memory_bs1': '~8GB VRAM',
+            'memory_bs4': '~18GB VRAM',
+            'strengths': ['Action-specific features', 'Kinetics-600 pretraining', '32x3 sampling', 'Memory efficient'],
+            'weaknesses': ['Requires checkpoint download', 'Newer implementation'],
+            'recommended_for': ['Action classification', 'Sports analysis', 'Best action recognition performance']
+        },
+        'k600': {
+            'name': 'Video MViTv2-B (Kinetics-600)',
+            'params': '~52M',
+            'memory_bs1': '~8GB VRAM',
+            'memory_bs4': '~18GB VRAM',
+            'strengths': ['Action-specific features', 'Kinetics-600 pretraining', '32x3 sampling', 'Memory efficient'],
+            'weaknesses': ['Requires checkpoint download', 'Newer implementation'],
+            'recommended_for': ['Action classification', 'Sports analysis', 'Best action recognition performance']
         }
     }
     
@@ -144,7 +163,7 @@ def get_backbone_info(arch: str) -> dict:
 
 def list_available_backbones() -> list:
     """Get list of available backbone architectures."""
-    return ['swin', 'mvit']
+    return ['swin', 'mvit', 'mvitv2_b', 'k600']
 
 
 def print_backbone_comparison():
@@ -164,9 +183,10 @@ def print_backbone_comparison():
             print(f"   Best for: {', '.join(info['recommended_for'])}")
     
     print("\n💡 RECOMMENDATIONS:")
+    print("   • Use 'k600' for action classification (Kinetics-600 pretrained, ≥8GB VRAM)")
     print("   • Use 'swin' for maximum accuracy (if you have ≥16GB VRAM)")
     print("   • Use 'mvit' for efficiency and deployment (works with ≥8GB VRAM)")
-    print("   • Both support identical freeze modes and training features")
+    print("   • All support identical freeze modes and training features")
     print("="*80 + "\n")
 
 
@@ -174,13 +194,17 @@ def print_backbone_comparison():
 if __name__ == "__main__":
     print_backbone_comparison()
     
-    # Test both architectures
-    for arch in ['swin', 'mvit']:
+    # Test all architectures
+    for arch in ['swin', 'mvit', 'k600']:
         try:
             print(f"\nTesting {arch} backbone...")
             backbone = build_backbone(arch=arch, pretrained=False, freeze_mode='none')
             print(f"✅ {arch} backbone created successfully")
             print(f"   Output dim: {backbone.out_dim}")
             print(f"   Total params: {sum(p.numel() for p in backbone.parameters()):,}")
+            if hasattr(backbone, 'get_output_dimensions'):
+                dims = backbone.get_output_dimensions()
+                if 'pretrained_on' in dims:
+                    print(f"   Pretrained on: {dims['pretrained_on']}")
         except Exception as e:
             print(f"❌ {arch} backbone failed: {e}") 
