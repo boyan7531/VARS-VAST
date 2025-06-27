@@ -12,6 +12,52 @@ import torch
 import torch.nn as nn
 import urllib.request
 from pathlib import Path
+import sys
+from typing import Callable
+
+# -------------------------------------------------------------
+# Helper: robust file downloader (follows redirects, sets UA)
+# -------------------------------------------------------------
+def _download_with_progress(url: str, dest_path: Path, chunk_size: int = 8192):
+    """Download ``url`` to ``dest_path`` with a progress bar and
+    a proper User-Agent header to avoid 403 errors on S3/Cloudfront.
+    If the ``requests`` package is missing, falls back to urllib.
+    """
+
+    try:
+        import requests
+
+        with requests.get(url, stream=True, headers={"User-Agent": "Mozilla/5.0"}) as r:
+            r.raise_for_status()
+            total = int(r.headers.get("Content-Length", 0))
+            downloaded = 0
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(dest_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total:
+                            done = int(50 * downloaded / total)
+                            sys.stdout.write("\r[{}{}] {:.1f}%".format("█" * done, " " * (50 - done), downloaded * 100 / total))
+                            sys.stdout.flush()
+        sys.stdout.write("\n")
+    except ImportError:
+        # fallback to urllib
+        import urllib.request
+        opener = urllib.request.build_opener()
+        opener.addheaders = [("User-Agent", "Mozilla/5.0")]
+        urllib.request.install_opener(opener)
+        urllib.request.urlretrieve(url, dest_path)
+    except Exception as e:
+        # Final fallback: try system curl if available (helps with corporate proxies)
+        try:
+            import subprocess, shlex
+            cmd = f"curl -L --fail -o {str(dest_path)} {url}"
+            print(f"\n⚙️  Falling back to system curl…")
+            subprocess.check_call(shlex.split(cmd))
+        except Exception as e2:
+            raise RuntimeError(f"Failed to download {url}: {e} | curl fallback: {e2}")
 
 class VideoMMAction2MViTBackbone(nn.Module):
     """
@@ -236,28 +282,69 @@ class VideoMMAction2MViTBackbone(nn.Module):
 
     def _load_pretrained_weights(self, checkpoint_path: Optional[str], cache_dir: str):
         """
-        Download and load MMAction2 Kinetics-600 pre-trained weights.
+        Download and load Kinetics-400 pre-trained weights.
         """
         if checkpoint_path is None:
-            # Default MMAction2 checkpoint URL
-            checkpoint_url = "https://download.openmmlab.com/mmaction/v1.0/recognition/mvit/converted/mvit-base-p244_32x3x1_kinetics600-rgb_20221021-f9f257ca.pth"
-            
             # Create cache directory
             cache_path = Path(cache_dir)
             cache_path.mkdir(exist_ok=True)
             
             # Download checkpoint if not exists
-            checkpoint_path = cache_path / "mvit_k600_mmaction2.pth"
+            checkpoint_path = cache_path / "mvit_k400_pytorchvideo.pth"
             
             if not checkpoint_path.exists():
-                print(f"Downloading MMAction2 MViTv2-B Kinetics-600 checkpoint...")
-                try:
-                    urllib.request.urlretrieve(checkpoint_url, checkpoint_path)
-                    print(f"Downloaded checkpoint to {checkpoint_path}")
-                except Exception as e:
-                    print(f"Failed to download checkpoint: {e}")
-                    print("Please download manually from:")
-                    print(checkpoint_url)
+                print("📦 Downloading Kinetics-400 MViTv2-B checkpoint (~333 MB)…")
+                
+                # Try multiple download sources in order of preference
+                download_urls = [
+                    # Primary: PyTorchVideo CDN (sometimes blocked)
+                    "https://dl.fbaipublicfiles.com/pytorchvideo/model_zoo/mvit/v2/MViTv2_B_32x3_k400_fps50.pyth",
+                    # Alternative: Try direct GitHub releases (if available)
+                    # "https://github.com/facebookresearch/pytorchvideo/releases/download/v0.1.5/MViTv2_B_32x3_k400_fps50.pyth",
+                ]
+                
+                download_success = False
+                for i, url in enumerate(download_urls):
+                    try:
+                        print(f"🔄 Trying download source {i+1}/{len(download_urls)}...")
+                        _download_with_progress(url, checkpoint_path)
+                        print(f"✅ Downloaded checkpoint to {checkpoint_path}\n")
+                        download_success = True
+                        break
+                    except Exception as e:
+                        print(f"❌ Source {i+1} failed: {e}")
+                        if checkpoint_path.exists():
+                            checkpoint_path.unlink()  # Remove partial download
+                        continue
+                
+                if not download_success:
+                    print("\n" + "="*80)
+                    print("❌ AUTOMATIC DOWNLOAD FAILED")
+                    print("="*80)
+                    print("The PyTorchVideo CDN is currently blocking automated downloads.")
+                    print("Please download the checkpoint manually using one of these methods:")
+                    print("\n🔧 OPTION 1: Manual download with curl (recommended)")
+                    print("Run this command in your terminal:")
+                    print(f'curl -L -o "{checkpoint_path}" "https://dl.fbaipublicfiles.com/pytorchvideo/model_zoo/mvit/v2/MViTv2_B_32x3_k400_fps50.pyth"')
+                    
+                    print("\n🔧 OPTION 2: Browser download")
+                    print("1. Open this URL in your browser:")
+                    print("   https://dl.fbaipublicfiles.com/pytorchvideo/model_zoo/mvit/v2/MViTv2_B_32x3_k400_fps50.pyth")
+                    print(f"2. Save the file as: {checkpoint_path}")
+                    
+                    print("\n🔧 OPTION 3: Use wget")
+                    print("Run this command in your terminal:")
+                    print(f'wget -O "{checkpoint_path}" "https://dl.fbaipublicfiles.com/pytorchvideo/model_zoo/mvit/v2/MViTv2_B_32x3_k400_fps50.pyth"')
+                    
+                    print("\n🔧 OPTION 4: Alternative model")
+                    print("Consider using ImageNet pre-trained weights instead:")
+                    print("--backbone-arch mvitv2_b  # Uses timm ImageNet weights")
+                    
+                    print("\n💡 TIP: The file size should be ~333 MB (349,018,454 bytes)")
+                    print("="*80)
+                    
+                    # Continue without pre-trained weights
+                    print("⚠️  Continuing with random initialization (no pre-trained weights)")
                     return
         
         # Load the checkpoint
@@ -289,7 +376,7 @@ class VideoMMAction2MViTBackbone(nn.Module):
             if unexpected_keys:
                 print(f"Unexpected keys when loading checkpoint: {unexpected_keys[:10]}...")  # Show first 10
                 
-            print("Successfully loaded MMAction2 Kinetics-600 pre-trained weights")
+            print("Successfully loaded PyTorchVideo Kinetics-400 pre-trained weights")
             
         except Exception as e:
             print(f"Failed to load checkpoint: {e}")
@@ -304,15 +391,21 @@ class VideoMMAction2MViTBackbone(nn.Module):
                 test_output = self.model.forward_features(test_input)
                 if isinstance(test_output, (list, tuple)):
                     test_output = test_output[-1]
-                
+
                 if test_output.dim() == 3:  # (B, tokens, C)
+                    # If pooled output requested we would average later; the per-token dim is still valid
                     return test_output.shape[-1]
-                elif test_output.dim() == 2:  # (B, C)
+                elif test_output.dim() == 2:  # (B, C) already pooled
                     return test_output.shape[-1]
                 else:
-                    return 768  # Default for MViTv2-B
-            except:
+                    return 768  # Sensible default for MViTv2-B
+
+            except Exception:
+                # Any error during probing falls back to default
                 return 768  # Fallback dimension
+
+        # Final safeguard (should rarely be reached)
+        return 768
 
     def _enable_checkpointing(self):
         """Enable gradient checkpointing for memory efficiency."""
@@ -404,10 +497,10 @@ class VideoMMAction2MViTBackbone(nn.Module):
             
             # Process as video
             features = self.model.forward_features(x)
-            
+
             if isinstance(features, (list, tuple)):
                 features = features[-1]
-            
+
             # Handle different output formats
             if features.dim() == 3:  # (B, tokens, C)
                 if self.return_pooled:
@@ -421,7 +514,7 @@ class VideoMMAction2MViTBackbone(nn.Module):
                 features = features.view(B, -1)
                 
             return features
-            
+
         else:
             # Image input (B, C, H, W) - process frame by frame
             B, C, H, W = x.shape
@@ -431,18 +524,18 @@ class VideoMMAction2MViTBackbone(nn.Module):
             
             features = self.model.forward_features(x)
             
-            if isinstance(features, (list, tuple)):
-                features = features[-1]
+        if isinstance(features, (list, tuple)):
+            features = features[-1]
             
-            if features.dim() == 3:  # (B, tokens, C)
-                if self.return_pooled:
-                    features = features.mean(dim=1)  # (B, C)
+        if features.dim() == 3:  # (B, tokens, C)
+            if self.return_pooled:
+                features = features.mean(dim=1)  # (B, C)
             elif features.dim() == 2:  # (B, C)
                 pass
             else:
                 features = features.view(B, -1)
-                
-            return features
+            
+        return features
 
     # Convenience methods
     def get_current_unfreeze_stage(self) -> int:

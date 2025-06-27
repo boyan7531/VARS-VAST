@@ -84,13 +84,13 @@ def build_backbone(
             **kwargs
         )
         
-    elif arch.lower() in ['mvitv2_b', 'mvitv2', 'mvitv2_base', 'k600', 'kinetics600']:
+    elif arch.lower() in ['mvitv2_b', 'mvitv2', 'mvitv2_base', 'k600', 'kinetics600', 'k400', 'kinetics400']:
         from .timm_mvit_backbone import build_mmaction2_mvit_backbone as _builder
 
-        print("  Architecture: Video MViTv2-B (MMAction2 Kinetics-600)")
+        print("  Architecture: Video MViTv2-B (PyTorchVideo Kinetics-400)")
         print("  Parameters: ~52M")
         print("  Memory: ~8GB VRAM @ BS=1")
-        print("  Pretrained: Kinetics-600 (action classification)")
+        print("  Pretrained: Kinetics-400 (action classification)")
         print("  Strengths: Efficiency, action-specific features, 32x3 sampling")
 
         return _builder(
@@ -102,7 +102,7 @@ def build_backbone(
         )
         
     else:
-        available_archs = ['swin', 'mvit', 'mvitv2_b', 'k600']
+        available_archs = ['swin', 'mvit', 'mvitv2_b', 'k600', 'k400']
         raise ValueError(
             f"Unknown backbone architecture: '{arch}'. "
             f"Available architectures: {available_archs}"
@@ -139,22 +139,31 @@ def get_backbone_info(arch: str) -> dict:
             'recommended_for': ['Limited compute', 'Production deployment', 'Efficiency requirements']
         },
         'mvitv2_b': {
-            'name': 'Video MViTv2-B (Kinetics-600)',
+            'name': 'Video MViTv2-B (timm ImageNet)',
             'params': '~52M',
             'memory_bs1': '~8GB VRAM',
             'memory_bs4': '~18GB VRAM',
-            'strengths': ['Action-specific features', 'Kinetics-600 pretraining', '32x3 sampling', 'Memory efficient'],
-            'weaknesses': ['Requires checkpoint download', 'Newer implementation'],
-            'recommended_for': ['Action classification', 'Sports analysis', 'Best action recognition performance']
+            'strengths': ['Stable weights', 'Auto-download works', 'Good for transfer learning'],
+            'weaknesses': ['ImageNet pre-training less optimal for video'],
+            'recommended_for': ['Transfer learning', 'When action pre-training unavailable']
         },
         'k600': {
             'name': 'Video MViTv2-B (Kinetics-600)',
             'params': '~52M',
             'memory_bs1': '~8GB VRAM',
             'memory_bs4': '~18GB VRAM',
-            'strengths': ['Action-specific features', 'Kinetics-600 pretraining', '32x3 sampling', 'Memory efficient'],
-            'weaknesses': ['Requires checkpoint download', 'Newer implementation'],
-            'recommended_for': ['Action classification', 'Sports analysis', 'Best action recognition performance']
+            'strengths': ['Best action features', 'Most diverse pretraining (600 classes)', '32x3 sampling'],
+            'weaknesses': ['CDN download often blocked', 'Requires manual setup'],
+            'recommended_for': ['Maximum action performance', 'Research', 'When setup time available']
+        },
+        'k400': {
+            'name': 'Video MViTv2-B (Kinetics-400)',
+            'params': '~52M',
+            'memory_bs1': '~8GB VRAM', 
+            'memory_bs4': '~18GB VRAM',
+            'strengths': ['Great action features', 'Reliable download (usually)', '32x3 sampling'],
+            'weaknesses': ['Slightly less diverse than K600 (400 vs 600 classes)'],
+            'recommended_for': ['Action classification', 'Production use', 'Easy deployment']
         }
     }
     
@@ -163,7 +172,7 @@ def get_backbone_info(arch: str) -> dict:
 
 def list_available_backbones() -> list:
     """Get list of available backbone architectures."""
-    return ['swin', 'mvit', 'mvitv2_b', 'k600']
+    return ['swin', 'mvit', 'mvitv2_b', 'k600', 'k400']
 
 
 def print_backbone_comparison():
@@ -183,10 +192,16 @@ def print_backbone_comparison():
             print(f"   Best for: {', '.join(info['recommended_for'])}")
     
     print("\n💡 RECOMMENDATIONS:")
-    print("   • Use 'k600' for action classification (Kinetics-600 pretrained, ≥8GB VRAM)")
-    print("   • Use 'swin' for maximum accuracy (if you have ≥16GB VRAM)")
-    print("   • Use 'mvit' for efficiency and deployment (works with ≥8GB VRAM)")
-    print("   • All support identical freeze modes and training features")
+    print("   🥇 BEST FOR ACTION CLASSIFICATION:")
+    print("      • 'k400' - Great balance of performance and reliability (recommended)")
+    print("      • 'k600' - Maximum performance (if download works or manual setup done)")
+    print("   🎯 FOR GENERAL VIDEO TASKS:")
+    print("      • 'swin' - Maximum accuracy (requires ≥16GB VRAM)")
+    print("      • 'mvit' - Good efficiency baseline (≥8GB VRAM)")
+    print("   🔧 FALLBACK OPTIONS:")
+    print("      • 'mvitv2_b' - ImageNet weights when action pre-training fails")
+    print("\n   ⚠️  NOTE: K400/K600 may require manual download due to CDN restrictions")
+    print("   📊 Performance ranking: K600 ≈ K400 > Swin ≈ MViT > ImageNet (for action tasks)")
     print("="*80 + "\n")
 
 
@@ -195,7 +210,7 @@ if __name__ == "__main__":
     print_backbone_comparison()
     
     # Test all architectures
-    for arch in ['swin', 'mvit', 'k600']:
+    for arch in ['swin', 'mvit', 'k400']:
         try:
             print(f"\nTesting {arch} backbone...")
             backbone = build_backbone(arch=arch, pretrained=False, freeze_mode='none')
