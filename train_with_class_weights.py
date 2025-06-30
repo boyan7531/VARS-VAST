@@ -28,11 +28,15 @@ import argparse
 import json
 import logging
 import sys
+import os
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, List
 from contextlib import nullcontext
 from collections import Counter
+from datetime import datetime
+import warnings
+import random
 
 import torch
 import torch.optim as optim
@@ -40,6 +44,8 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
+# Multi-GPU imports
+from torch.nn.parallel import DataParallel
 
 # Add project root to path
 sys.path.append(str(Path(__file__).parent))
@@ -58,6 +64,8 @@ from utils import (
     format_metrics_table
 )
 
+warnings.filterwarnings('ignore')
+
 
 def setup_logging(level: str = 'INFO'):
     """Setup logging configuration."""
@@ -69,6 +77,126 @@ def setup_logging(level: str = 'INFO'):
         ]
     )
     return logging.getLogger(__name__)
+
+
+def get_gpu_info():
+    """Get information about available GPUs."""
+    if not torch.cuda.is_available():
+        return {
+            'num_gpus': 0,
+            'gpu_names': [],
+            'total_memory': 0,
+            'support_multi_gpu': False
+        }
+    
+    num_gpus = torch.cuda.device_count()
+    gpu_names = []
+    total_memory = 0
+    
+    for i in range(num_gpus):
+        props = torch.cuda.get_device_properties(i)
+        gpu_names.append(f"{props.name} ({props.total_memory // 1024**3}GB)")
+        total_memory += props.total_memory
+    
+    return {
+        'num_gpus': num_gpus,
+        'gpu_names': gpu_names,
+        'total_memory': total_memory // 1024**3,  # Convert to GB
+        'support_multi_gpu': num_gpus > 1
+    }
+
+
+
+
+
+def setup_device_and_model(args, model, gpu_info):
+    """Setup device configuration and wrap model for multi-GPU if needed."""
+    logger = logging.getLogger(__name__)
+    
+    # Single GPU or CPU
+    if args.multi_gpu == 'none' or gpu_info['num_gpus'] <= 1:
+        if args.device == 'auto':
+            device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        else:
+            device = torch.device(args.device)
+        
+        model = model.to(device)
+        logger.info(f"🔧 Using single device: {device}")
+        return device, model, False
+    
+    # Multi-GPU setup
+    if not gpu_info['support_multi_gpu']:
+        logger.warning("❌ Multi-GPU requested but only 1 GPU available. Using single GPU.")
+        device = torch.device('cuda:0')
+        model = model.to(device)
+        return device, model, False
+    
+    # Auto-select best multi-GPU strategy
+    if args.multi_gpu == 'auto':
+        # For 2-8 GPUs, DataParallel is simpler and well-supported
+        # For >8 GPUs, would need DistributedDataParallel (not implemented)
+        if gpu_info['num_gpus'] <= 8:
+            args.multi_gpu = 'dataparallel'
+            logger.info(f"🤖 Auto-selected DataParallel for {gpu_info['num_gpus']} GPUs")
+        else:
+            logger.error(f"❌ {gpu_info['num_gpus']} GPUs detected - DistributedDataParallel needed but not implemented")
+            logger.error("   Use --multi-gpu dataparallel for up to 8 GPUs")
+            raise NotImplementedError(f"Too many GPUs ({gpu_info['num_gpus']}) for current implementation")
+    
+    # Setup DataParallel
+    if args.multi_gpu == 'dataparallel':
+        device = torch.device('cuda:0')
+        model = model.to(device)
+        
+        # Check if model can be parallelized
+        if torch.cuda.device_count() > 1:
+            gpu_ids = list(range(torch.cuda.device_count()))
+            model = DataParallel(model, device_ids=gpu_ids)
+            logger.info(f"🚀 DataParallel enabled on {len(gpu_ids)} GPUs: {gpu_ids}")
+            logger.info(f"📊 Total GPU memory: {gpu_info['total_memory']}GB")
+            for i, name in enumerate(gpu_info['gpu_names']):
+                logger.info(f"   GPU {i}: {name}")
+        else:
+            logger.warning("⚠️  DataParallel requested but <2 GPUs available")
+        
+        return device, model, True
+    
+    # DistributedDataParallel (for advanced users with >4 GPUs)
+    elif args.multi_gpu == 'distributed':
+        logger.error("❌ DistributedDataParallel not fully implemented in this version")
+        logger.error("   Use --multi-gpu dataparallel for dual GPU training")
+        logger.error("   Or --multi-gpu auto to automatically select best strategy")
+        raise NotImplementedError("DistributedDataParallel requires additional setup")
+    
+    else:
+        raise ValueError(f"Invalid multi_gpu option: {args.multi_gpu}")
+
+
+def get_effective_batch_size(args, is_multi_gpu, gpu_count):
+    """Calculate effective batch size for multi-GPU training."""
+    if is_multi_gpu and args.multi_gpu == 'dataparallel':
+        # DataParallel splits batch across GPUs
+        effective_batch_size = args.batch_size
+        per_gpu_batch_size = args.batch_size // gpu_count
+        return effective_batch_size, per_gpu_batch_size
+    elif is_multi_gpu and args.multi_gpu == 'distributed':
+        # DistributedDataParallel: each process gets full batch_size (not implemented)
+        per_gpu_batch_size = args.batch_size
+        effective_batch_size = args.batch_size * gpu_count
+        return effective_batch_size, per_gpu_batch_size
+    else:
+        return args.batch_size, args.batch_size
+
+
+def validate_multi_gpu_batch_size(args, gpu_count):
+    """Validate and adjust batch size for multi-GPU training."""
+    if args.multi_gpu == 'dataparallel' and args.batch_size < gpu_count:
+        logger = logging.getLogger(__name__)
+        logger.warning(f"⚠️  Batch size ({args.batch_size}) < GPU count ({gpu_count})")
+        logger.warning(f"   Adjusting batch size to {gpu_count} (minimum for DataParallel)")
+        args.batch_size = gpu_count
+    
+    return args.batch_size
 
 
 def get_unfreeze_schedule(total_epochs: int, freeze_mode: str) -> Dict[int, str]:
@@ -855,6 +983,11 @@ def main():
     parser.add_argument('--minority-boost-factor', type=float, default=2.0,
                         help='Extra boost factor for minority classes in sampling (default: 2.0)')
     
+    # Multi-GPU arguments
+    parser.add_argument('--multi-gpu', type=str, default='none',
+                        choices=['none', 'dataparallel', 'distributed', 'auto'],
+                        help='Multi-GPU strategy: none (single GPU), dataparallel (2-8 GPUs), distributed (not implemented), auto (recommend dataparallel)')
+    
     args = parser.parse_args()
     
     # Parse and validate loss types configuration
@@ -920,7 +1053,31 @@ def main():
     log_level = 'DEBUG' if args.verbose else 'INFO'
     logger = setup_logging(log_level)
     
-    # Setup device
+    # Get GPU information
+    gpu_info = get_gpu_info()
+    logger = logging.getLogger(__name__)
+    
+    logger.info("🔍 GPU Detection:")
+    logger.info(f"   Available GPUs: {gpu_info['num_gpus']}")
+    if gpu_info['num_gpus'] > 0:
+        logger.info(f"   Total GPU memory: {gpu_info['total_memory']}GB")
+        for i, name in enumerate(gpu_info['gpu_names']):
+            logger.info(f"   GPU {i}: {name}")
+        logger.info(f"   Multi-GPU support: {'✅ Yes' if gpu_info['support_multi_gpu'] else '❌ No'}")
+    else:
+        logger.info("   No CUDA GPUs detected - using CPU")
+    
+    # Validate multi-GPU configuration
+    if args.multi_gpu != 'none' and gpu_info['num_gpus'] <= 1:
+        logger.warning(f"⚠️  Multi-GPU mode '{args.multi_gpu}' requested but only {gpu_info['num_gpus']} GPU(s) available")
+        logger.warning("   Falling back to single GPU mode")
+        args.multi_gpu = 'none'
+    
+    # Validate and adjust batch size for multi-GPU
+    if args.multi_gpu != 'none':
+        validate_multi_gpu_batch_size(args, gpu_info['num_gpus'])
+    
+    # Setup device (will be refined in setup_device_and_model)
     if args.device == 'auto':
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     else:
@@ -1001,7 +1158,6 @@ def main():
         
         # Apply fractional subset for smoke tests
         if 0 < args.train_fraction < 1.0:
-            import random
             subset_size = int(len(train_dataset) * args.train_fraction)
             indices = list(range(len(train_dataset)))
             random.shuffle(indices)
@@ -1259,14 +1415,33 @@ def main():
             T_max=args.epochs
         )
         
-        # Move model to device and ensure class weights are on correct device
-        model.to(device)
+        # Setup device and multi-GPU configuration
+        device, model, is_multi_gpu = setup_device_and_model(args, model, gpu_info)
         
         # Move class weights to device if they exist
         if hasattr(model.head, 'task_weights') and model.head.task_weights:
             for task_name, weights in model.head.task_weights.items():
                 if isinstance(weights, torch.Tensor):
-                    model.head.task_weights[task_name] = weights.to(device)
+                    # Handle DataParallel case where model.head might be wrapped
+                    if is_multi_gpu and hasattr(model, 'module'):
+                        model.module.head.task_weights[task_name] = weights.to(device)
+                    else:
+                        model.head.task_weights[task_name] = weights.to(device)
+        
+        # Calculate effective batch sizes for multi-GPU
+        effective_batch_size, per_gpu_batch_size = get_effective_batch_size(args, is_multi_gpu, gpu_info['num_gpus'])
+        
+        if is_multi_gpu:
+            logger.info(f"🚀 Multi-GPU Configuration:")
+            logger.info(f"   Strategy: {args.multi_gpu}")
+            logger.info(f"   GPUs: {gpu_info['num_gpus']}")
+            logger.info(f"   Requested batch size: {args.batch_size}")
+            logger.info(f"   Effective batch size: {effective_batch_size}")
+            logger.info(f"   Per-GPU batch size: {per_gpu_batch_size}")
+        else:
+            logger.info(f"🔧 Single-GPU Configuration:")
+            logger.info(f"   Device: {device}")
+            logger.info(f"   Batch size: {args.batch_size}")
         
         # Create trainer
         trainer = MultiTaskTrainer(
