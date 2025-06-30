@@ -1468,10 +1468,13 @@ def main():
         output_dir.mkdir(parents=True, exist_ok=True)
         
         # Save configuration
+        # Handle DataParallel case for model.config access
+        model_config = model.module.config if hasattr(model, 'module') else model.config
+        
         config = {
             'args': vars(args),
             'imbalance_analysis': imbalance_analysis,
-            'model_config': model.config,
+            'model_config': model_config,
             'unfreeze_schedule': unfreeze_schedule
         }
         
