@@ -946,7 +946,10 @@ def main():
             bag_of_clips=args.bag_of_clips,
             max_clips_per_action=args.max_clips_per_action,
             min_clips_per_action=args.min_clips_per_action,
-            clip_sampling_strategy=args.clip_sampling_strategy
+            clip_sampling_strategy=args.clip_sampling_strategy,
+            random_start_augmentation=True,  # Enable random start frames for training
+            min_start_frame=45,
+            max_start_frame=74
         )
         
         # Apply fractional subset for smoke tests
