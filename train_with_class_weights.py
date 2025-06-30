@@ -1569,7 +1569,9 @@ def main():
             
             # Log current backbone status
             if args.freeze_mode == 'gradual':
-                current_stage = model.backbone.get_current_unfreeze_stage()
+                # Handle DataParallel case for model.backbone access
+                model_for_status = model.module if hasattr(model, 'module') else model
+                current_stage = model_for_status.backbone.get_current_unfreeze_stage()
                 trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
                 total_params = sum(p.numel() for p in model.parameters())
                 trainable_pct = (trainable_params / total_params) * 100
@@ -1616,7 +1618,9 @@ def main():
             
             # Log backbone unfreezing progress
             if args.freeze_mode == 'gradual':
-                current_stage = model.backbone.get_current_unfreeze_stage()
+                # Handle DataParallel case for model.backbone access
+                model_for_status = model.module if hasattr(model, 'module') else model
+                current_stage = model_for_status.backbone.get_current_unfreeze_stage()
                 trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
                 writer.add_scalar('Backbone/Stage', current_stage, epoch)
                 writer.add_scalar('Backbone/TrainableParams', trainable_params, epoch)
@@ -1626,7 +1630,9 @@ def main():
         
         # Final backbone status
         if args.freeze_mode == 'gradual':
-            final_stage = model.backbone.get_current_unfreeze_stage()
+            # Handle DataParallel case for model.backbone access
+            model_for_status = model.module if hasattr(model, 'module') else model
+            final_stage = model_for_status.backbone.get_current_unfreeze_stage()
             final_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
             final_total = sum(p.numel() for p in model.parameters())
             logger.info(f"🏁 Final backbone status: stage {final_stage}, "
