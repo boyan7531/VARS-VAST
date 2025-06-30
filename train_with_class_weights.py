@@ -1376,9 +1376,14 @@ def main():
             collate_fn=collate_fn
         )
         
+        # Setup device and multi-GPU configuration FIRST
+        device, model, is_multi_gpu = setup_device_and_model(args, model, gpu_info)
+        
         # Create optimizer with separate parameter groups for backbone and head
-        backbone_params = list(model.backbone.parameters())
-        head_params = list(model.head.parameters())
+        # Handle DataParallel case - access underlying model for parameter groups
+        model_for_optimizer = model.module if hasattr(model, 'module') else model
+        backbone_params = list(model_for_optimizer.backbone.parameters())
+        head_params = list(model_for_optimizer.head.parameters())
         
         param_groups = [
             {
@@ -1402,9 +1407,6 @@ def main():
             optimizer,
             T_max=args.epochs
         )
-        
-        # Setup device and multi-GPU configuration
-        device, model, is_multi_gpu = setup_device_and_model(args, model, gpu_info)
         
         # Move class weights to device if they exist
         # Handle DataParallel case where we need to access model.module.head
@@ -1583,6 +1585,8 @@ def main():
             if current_metric > best_metric:
                 best_metric = current_metric
                 
+                # Handle DataParallel case for model.backbone access
+                model_for_checkpoint = model.module if hasattr(model, 'module') else model
                 checkpoint = {
                     'epoch': epoch + 1,
                     'model_state_dict': model.state_dict(),
@@ -1590,7 +1594,7 @@ def main():
                     'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
                     'best_metric': best_metric,
                     'config': config,
-                    'backbone_stage': model.backbone.get_current_unfreeze_stage()
+                    'backbone_stage': model_for_checkpoint.backbone.get_current_unfreeze_stage()
                 }
                 
                 # Save with unique filename including epoch and metric
