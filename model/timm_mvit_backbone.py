@@ -120,7 +120,12 @@ class VideoMMAction2MViTBackbone(nn.Module):
 
         # 1) Try PyTorchVideo ‑ mvit_base_32x3 (matches MMAction2 checkpoints)
         try:
-            from pytorchvideo.models.hub.vision_transformers import mvit_base_32x3
+            try:
+                # Preferred location (PyTorchVideo ≥0.1.5)
+                from pytorchvideo.models.hub.vision_transformers import mvit_base_32x3 # type: ignore
+            except ImportError:
+                # Fallback for older versions (<0.1.5)
+                from pytorchvideo.models.hub import mvit_base_32x3  # type: ignore
 
             if pretrained and checkpoint_path is None:
                 # Let PyTorchVideo download/cache the official K400 weights.
