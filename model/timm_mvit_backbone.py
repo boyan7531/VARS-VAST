@@ -83,12 +83,11 @@ class VideoMMAction2MViTBackbone(nn.Module):
         self.checkpointing = checkpointing
         self._current = -1  # for gradual freeze mode
 
-        # Build the MViT model architecture
-        self.model = self._build_mvit_model()
-        
-        # Load pre-trained weights if requested
-        if pretrained:
-            self._load_pretrained_weights(checkpoint_path, cache_dir)
+        # Build the MViT model architecture (may load built-in K400 weights)
+        self.model = self._build_mvit_model(pretrained=pretrained, checkpoint_path=checkpoint_path)
+
+        # If _build_mvit_model() already loaded weights from torchvision we skip
+        built_in_loaded = getattr(self, "_built_in_weights_loaded", False)
 
         # Configure gradient checkpointing
         if checkpointing:
@@ -101,25 +100,61 @@ class VideoMMAction2MViTBackbone(nn.Module):
         self._build_groups()
         self.set_freeze(freeze_mode)
 
-    def _build_mvit_model(self) -> nn.Module:
+        # Load external pre-trained weights (PySlowFast/MMAction2) only if
+        #  1) user asked for pretrained AND
+        #  2) we did not already load the official torchvision Kinetics weights AND
+        #  3) a checkpoint_path was provided (otherwise we keep built-in weights)
+        if pretrained and (not built_in_loaded) and (checkpoint_path is not None):
+            self._load_pretrained_weights(checkpoint_path, cache_dir)
+
+    def _build_mvit_model(self, pretrained: bool, checkpoint_path: Optional[str]) -> nn.Module:
         """
         Build MViTv2-B model architecture matching MMAction2's configuration.
         Based on the 32x3 Kinetics-600 model structure.
         """
-        # Import MViT components (you may need to adjust imports based on available libraries)
+        # ------------------------------------------------------------------
+        #  Prefer the full-size 52 M-parameter architecture from PyTorchVideo.
+        #  If that is not available, fall back to torchvision's Small variant,
+        #  and finally to an internal minimal stub.
+        # ------------------------------------------------------------------
+
+        # 1) Try PyTorchVideo ‑ mvit_base_32x3 (matches MMAction2 checkpoints)
         try:
-            # Try to use existing MViT implementation or create minimal version
-            from torchvision.models.video import mvit_v2_s
-            # Use torchvision as base and modify for our needs
-            base_model = mvit_v2_s(weights=None)  # No weights, we'll load our own
-            
-            # Wrap the torchvision model to add forward_features method
+            from pytorchvideo.models.hub.vision_transformers import mvit_base_32x3
+
+            if pretrained and checkpoint_path is None:
+                # Let PyTorchVideo download/cache the official K400 weights.
+                base_model = mvit_base_32x3(pretrained=True)
+                self._built_in_weights_loaded = True
+                print("✅ Loaded PyTorchVideo Kinetics-400 pretrained weights (MViTv2-B 32×3)")
+            else:
+                # Either training from scratch or we'll load an external ckpt.
+                base_model = mvit_base_32x3(pretrained=False)
+                self._built_in_weights_loaded = False
+
             model = self._wrap_torchvision_mvit(base_model)
-            
-        except ImportError:
-            # Fallback: create a simplified MViT model structure
-            model = self._create_minimal_mvit()
-            
+
+        except Exception as ptv_exc:
+            # 2) Fallback – torchvision's mvit_v2_s (≈34 M params)
+            try:
+                from torchvision.models.video import mvit_v2_s, MViT_V2_S_Weights
+
+                if pretrained and checkpoint_path is None:
+                    base_model = mvit_v2_s(weights=MViT_V2_S_Weights.KINETICS400_V1)
+                    self._built_in_weights_loaded = True
+                    print("✅ Loaded torchvision Kinetics-400 pretrained weights (MViTv2-S)")
+                else:
+                    base_model = mvit_v2_s(weights=None)
+                    self._built_in_weights_loaded = False
+
+                model = self._wrap_torchvision_mvit(base_model)
+
+            except Exception as tv_exc:
+                # 3) Ultimate fallback – minimal stub implementation.
+                print("⚠️  Falling back to minimal stub MViT implementation "
+                      f"(PyTorchVideo error: {ptv_exc}; torchvision error: {tv_exc})")
+                model = self._create_minimal_mvit()
+
         return model
 
     def _wrap_torchvision_mvit(self, base_model) -> nn.Module:
@@ -149,32 +184,36 @@ class VideoMMAction2MViTBackbone(nn.Module):
                     # Add temporal dimension for video model
                     x = x.unsqueeze(2)  # (B, C, 1, H, W)
                 
-                # Hook method to capture features before head
+                # Try to tap features right before the classification head.
+                # Different implementations name this layer differently.
+                hook = None
                 features = None
-                
-                def hook_fn(module, input, output):
-                    nonlocal features
-                    features = output
-                
-                # Register hook on the norm layer (before head)
-                hook = self.base_model.norm.register_forward_hook(hook_fn)
-                
+
+                candidate_norm_names = [
+                    "norm",          # torchvision / timm naming
+                    "post_norm",     # some PyTorchVideo revisions
+                    "final_norm",
+                ]
+
+                for n in candidate_norm_names:
+                    if hasattr(self.base_model, n):
+                        hook = getattr(self.base_model, n).register_forward_hook(
+                            lambda _module, _inp, out: locals().update(**{"features": out})
+                        )
+                        break
+
                 try:
-                    # Run forward pass to trigger hook
                     _ = self.base_model(x)
-                    hook.remove()
-                    
+                    if hook is not None:
+                        hook.remove()
                     if features is not None:
                         return features
-                    else:
-                        # Fallback: create dummy features
-                        B = x.shape[0]
-                        return torch.zeros(B, 1, self.num_features, device=x.device)
-                        
-                except Exception as e:
-                    hook.remove()
-                    # Manual forward pass as fallback
-                    return self._manual_forward_features(x)
+                except Exception:
+                    if hook is not None:
+                        hook.remove()
+
+                # If hooking failed or layer not present, do manual forward
+                return self._manual_forward_features(x)
 
             def _manual_forward_features(self, x):
                 """Manual forward pass through the model layers."""
