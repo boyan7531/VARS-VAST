@@ -346,51 +346,124 @@ def create_mixup_cutmix_collate_fn(
     return collate_fn
 
 
-def create_minority_boost_sampler(dataset, boost_factor: float = 2.0, 
-                                 task_name: str = 'action_class') -> torch.utils.data.WeightedRandomSampler:
-    """
-    Create a weighted sampler that boosts minority classes.
-    
+# ---------------------------------------------------------------------------
+# Efficient minority boost sampler
+# ---------------------------------------------------------------------------
+
+
+def create_minority_boost_sampler(
+    dataset,
+    boost_factor: float = 2.0,
+    task_name: str = 'action_class',
+) -> torch.utils.data.WeightedRandomSampler:
+    """Create a *fast* weighted sampler that boosts minority classes.
+
+    The original implementation iterated over ``dataset`` which triggered video
+    decoding for every sample – extremely slow for MVFouls.  This rewrite
+    collects labels directly from the dataset *metadata* (``dataset_index`` or
+    ``action_groups``) so no video loading occurs.
+
     Args:
-        dataset: MVFouls dataset instance
-        boost_factor: Multiplication factor for minority class weights
-        task_name: Task to balance (default: 'action_class')
-        
+        dataset: ``MVFoulsDataset`` instance **or** a ``Subset`` wrapping it.
+        boost_factor: Multiplicative factor applied to the predefined minority
+            classes (hard-coded to ``{5, 6, 9}``).
+        task_name: Task whose classes are to be balanced (default: ``'action_class'``).
+
     Returns:
-        WeightedRandomSampler instance
+        ``torch.utils.data.WeightedRandomSampler`` with per-sample weights.
     """
-    # Get labels for the specified task
-    labels = []
-    for i in range(len(dataset)):
-        _, targets = dataset[i]
-        if isinstance(targets, dict):
-            label = targets[task_name].item()
+
+    # ------------------------------------------------------------------
+    # Resolve underlying dataset + (optional) subset indices
+    # ------------------------------------------------------------------
+    subset_indices = None
+    if hasattr(dataset, 'dataset') and hasattr(dataset, 'indices'):
+        # ``torch.utils.data.Subset``
+        subset_indices = list(dataset.indices)
+        base_dataset = dataset.dataset
+    else:
+        base_dataset = dataset
+
+    # Map task name to position in numeric label tensor
+    task_names_order = list(TASKS_INFO.keys()) if TASKS_INFO else []
+    if task_name not in task_names_order:
+        raise ValueError(f"Unknown task '{task_name}'. Must be one of {task_names_order}.")
+    task_idx = task_names_order.index(task_name)
+
+    # ------------------------------------------------------------------
+    # Collect per-sample labels WITHOUT loading any video data
+    # ------------------------------------------------------------------
+    labels: list[int] = []
+
+    def _append_label(tensor):
+        if tensor is not None and tensor.numel() > task_idx:
+            labels.append(int(tensor[task_idx].item()))
         else:
-            # Assume targets is tensor and extract task index
-            task_idx = list(TASKS_INFO.keys()).index(task_name)
-            label = targets[task_idx].item()
-        labels.append(label)
-    
-    # Compute class weights
-    class_counts = torch.bincount(torch.tensor(labels))
+            # Fallback to 0 (Missing/Empty) if label is unavailable
+            labels.append(0)
+
+    if getattr(base_dataset, 'bag_of_clips', False):
+        # Action-level sampling – iterate over actions rather than clips
+        action_ids_iter = (
+            subset_indices if subset_indices is not None else range(len(base_dataset.action_index))
+        )
+
+        for idx in action_ids_iter:
+            if idx >= len(base_dataset.action_index):
+                continue  # Safety
+            action_id = base_dataset.action_index[idx]
+            clip_info = base_dataset.action_groups[action_id][0]
+            _append_label(clip_info.numeric_labels)
+    else:
+        # Clip-level dataset
+        clip_indices_iter = (
+            subset_indices if subset_indices is not None else range(len(base_dataset.dataset_index))
+        )
+
+        for idx in clip_indices_iter:
+            clip_info = base_dataset.dataset_index[idx]
+            _append_label(clip_info.numeric_labels)
+
+    # Sanity check
+    if not labels:
+        raise RuntimeError('No labels collected for minority boost sampler.')
+
+    import torch  # Local import to prevent unnecessary torch cost if function unused
+
+    labels_tensor = torch.tensor(labels, dtype=torch.long)
+
+    # ------------------------------------------------------------------
+    # Compute class weights (inverse frequency) & boost minority classes
+    # ------------------------------------------------------------------
+    class_counts = torch.bincount(labels_tensor, minlength=max(labels) + 1)
     total_samples = len(labels)
-    
-    # Standard inverse frequency weights
+
+    # Avoid division by zero – replace zero counts with 1
+    class_counts[class_counts == 0] = 1
+
     class_weights = total_samples / (len(class_counts) * class_counts.float())
-    
-    # Boost minority classes
+
     minority_classes = {5, 6, 9}  # "Elbowing", "High leg", "Dive"
-    for cls in minority_classes:
-        if cls < len(class_weights):
-            class_weights[cls] *= boost_factor
-    
-    # Create sample weights
-    sample_weights = [class_weights[label] for label in labels]
-    
+    for cls_idx in minority_classes:
+        if cls_idx < len(class_weights):
+            class_weights[cls_idx] *= boost_factor
+
+    # ------------------------------------------------------------------
+    # Build per-sample weight list matching *dataset index order*
+    # ------------------------------------------------------------------
+    sample_weights = [class_weights[label] for label in labels_tensor]
+
+    # Verify length correctness
+    expected_len = len(subset_indices) if subset_indices is not None else len(dataset)
+    if len(sample_weights) != expected_len:
+        raise ValueError(
+            f"Sample weights length mismatch: {len(sample_weights)} vs expected {expected_len}"
+        )
+
     return torch.utils.data.WeightedRandomSampler(
         weights=sample_weights,
         num_samples=len(sample_weights),
-        replacement=True
+        replacement=True,
     )
 
 
