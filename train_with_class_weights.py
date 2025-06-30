@@ -926,8 +926,15 @@ def main():
     logger.info(f"Target tasks: action_class, severity, offence")
     
     try:
-        # Create transforms
-        transforms = get_video_transforms(image_size=224, augment_train=True)
+        # Create transforms with new base augmentations
+        try:
+            from augmentation import get_augmented_transforms
+            transforms = get_augmented_transforms(image_size=224, augment_level='base')
+            logger.info("🎨 Using new base augmentation pipeline")
+        except ImportError:
+            # Fallback to original transforms if augmentation module not available
+            transforms = get_video_transforms(image_size=224, augment_train=True)
+            logger.info("📹 Using original transform pipeline (fallback)")
         
         # Create datasets
         logger.info("📂 Creating datasets...")
@@ -949,7 +956,8 @@ def main():
             clip_sampling_strategy=args.clip_sampling_strategy,
             random_start_augmentation=True,  # Enable random start frames for training
             min_start_frame=45,
-            max_start_frame=74
+            max_start_frame=74,
+            target_size=None  # Let augmentation pipeline handle resizing
         )
         
         # Apply fractional subset for smoke tests
@@ -972,7 +980,8 @@ def main():
             bag_of_clips=args.bag_of_clips,
             max_clips_per_action=args.max_clips_per_action,
             min_clips_per_action=args.min_clips_per_action,
-            clip_sampling_strategy='uniform'  # Use uniform for validation
+            clip_sampling_strategy='uniform',  # Use uniform for validation
+            target_size=None  # Let augmentation pipeline handle resizing
         )
         
         logger.info(f"📊 Dataset sizes: {len(train_dataset)} train, {len(val_dataset)} val")
