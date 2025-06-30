@@ -197,7 +197,7 @@ class MultiTaskTrainer:
                 total_loss = loss_dict.get('total_loss', loss_dict.get('total_loss_adaptive', 0.0))
             else:
                 # Use standard loss computation
-                loss_dict = self.model.compute_loss(filtered_logits, filtered_targets, return_dict=True)
+                loss_dict = base_model.compute_loss(filtered_logits, filtered_targets, return_dict=True)
                 total_loss = loss_dict['total_loss']
         else:
             logits, extras = self.model(videos, clip_mask=clip_masks, return_dict=False)
@@ -215,7 +215,7 @@ class MultiTaskTrainer:
                         targets = (offence_targets == 1).long()  # Convert to binary
             
             # Compute loss
-            loss_dict = self.model.compute_loss(logits, targets, return_dict=True)
+            loss_dict = base_model.compute_loss(logits, targets, return_dict=True)
             total_loss = loss_dict['total_loss']
         
         # Scale loss for gradient accumulation
@@ -379,7 +379,7 @@ class MultiTaskTrainer:
                             targets_dict = {'default': targets[:, 0]}
                     
                     # Compute loss
-                    loss_dict = self.model.compute_loss(logits_dict, targets_dict, return_dict=True)
+                    loss_dict = base_model.compute_loss(logits_dict, targets_dict, return_dict=True)
                     eval_losses.append(loss_dict['total_loss'].item())
                     
                     all_logits.append(logits_dict)
@@ -401,7 +401,7 @@ class MultiTaskTrainer:
                                 targets = (offence_targets == 1).long()  # Convert to binary
                     
                     # Compute loss
-                    loss_dict = self.model.compute_loss(logits, targets, return_dict=True)
+                    loss_dict = base_model.compute_loss(logits, targets, return_dict=True)
                     eval_losses.append(loss_dict['total_loss'].item())
                     
                     all_logits.append(logits)
