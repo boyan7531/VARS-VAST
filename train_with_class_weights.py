@@ -692,6 +692,11 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
     Returns:
         WeightedRandomSampler that balances the specified task(s)
     """
+    # PERFORMANCE FIX: Import and cache metadata once outside the loop
+    from utils import get_task_metadata
+    metadata = get_task_metadata()
+    task_names_list = metadata['task_names']
+    
     # Handle Subset datasets (e.g., for smoke tests)
     subset_indices = None
     if hasattr(dataset, 'dataset') and hasattr(dataset, 'indices'):
@@ -724,10 +729,6 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
                         clip_info = base_dataset.action_groups[action_id][0]  # First clip
                         if clip_info.numeric_labels is not None:
                             joint_key = []
-                            from utils import get_task_metadata
-                            metadata = get_task_metadata()
-                            task_names_list = metadata['task_names']
-                            
                             for task_name in task_names:
                                 if task_name in task_names_list:
                                     task_idx = task_names_list.index(task_name)
@@ -742,10 +743,6 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
                     clip_info = base_dataset.action_groups[action_id][0]  # First clip
                     if clip_info.numeric_labels is not None:
                         joint_key = []
-                        from utils import get_task_metadata
-                        metadata = get_task_metadata()
-                        task_names_list = metadata['task_names']
-                        
                         for task_name in task_names:
                             if task_name in task_names_list:
                                 task_idx = task_names_list.index(task_name)
@@ -764,11 +761,6 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
                     clip_info = base_dataset.dataset_index[idx]
                     if clip_info.numeric_labels is not None:
                         joint_key = []
-                        # Get the task indices for the requested tasks
-                        from utils import get_task_metadata
-                        metadata = get_task_metadata()
-                        task_names_list = metadata['task_names']
-                        
                         for task_name in task_names:
                             if task_name in task_names_list:
                                 task_idx = task_names_list.index(task_name)
@@ -781,10 +773,6 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
             for clip_info in base_dataset.dataset_index:
                 if clip_info.numeric_labels is not None:
                     joint_key = []
-                    from utils import get_task_metadata
-                    metadata = get_task_metadata()
-                    task_names_list = metadata['task_names']
-                    
                     for task_name in task_names:
                         if task_name in task_names_list:
                             task_idx = task_names_list.index(task_name)
