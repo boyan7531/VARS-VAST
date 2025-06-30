@@ -81,9 +81,13 @@ class MultiTaskTrainer:
         
         # Task curriculum state
         self.task_difficulties = {}
-        if hasattr(model, 'head') and hasattr(model.head, 'task_names'):
-            self.active_tasks = set(model.head.task_names)
-        elif model.multi_task and get_task_metadata is not None:
+        
+        # Handle DataParallel case for attribute access
+        base_model = model.module if hasattr(model, 'module') else model
+        
+        if hasattr(base_model, 'head') and hasattr(base_model.head, 'task_names'):
+            self.active_tasks = set(base_model.head.task_names)
+        elif base_model.multi_task and get_task_metadata is not None:
             metadata = get_task_metadata()
             self.active_tasks = set(metadata['task_names'])
         else:
@@ -91,6 +95,10 @@ class MultiTaskTrainer:
         
         # Move model to device
         self.model.to(device)
+    
+    def _get_base_model(self):
+        """Get the base model, handling DataParallel wrapper."""
+        return self.model.module if hasattr(self.model, 'module') else self.model
     
     def train_step(
         self,
@@ -124,7 +132,8 @@ class MultiTaskTrainer:
         videos = videos.to(self.device)
         
         # Handle target format
-        if self.model.multi_task:
+        base_model = self._get_base_model()
+        if base_model.multi_task:
             if not isinstance(targets, dict):
                 # Convert tensor to dict format
                 targets = targets.to(self.device)
@@ -163,7 +172,7 @@ class MultiTaskTrainer:
             filtered_targets = targets_dict
         
         # Forward pass
-        if self.model.multi_task:
+        if base_model.multi_task:
             logits_dict, extras = self.model(videos, clip_mask=clip_masks, return_dict=True)
             
             # Filter logits for curriculum learning
@@ -174,11 +183,11 @@ class MultiTaskTrainer:
             
             # Check if we should use unified adaptive loss
             if (hasattr(self, 'adaptive_weights') and self.adaptive_weights and 
-                hasattr(self.model.head, 'compute_unified_loss')):
+                hasattr(base_model.head, 'compute_unified_loss')):
                 # Use unified adaptive loss computation
-                focal_gamma = getattr(self.model, 'task_focal_gamma_map', {}).get('default', 2.0)
+                focal_gamma = getattr(base_model, 'task_focal_gamma_map', {}).get('default', 2.0)
                 
-                loss_dict = self.model.head.compute_unified_loss(
+                loss_dict = base_model.head.compute_unified_loss(
                     filtered_logits,
                     filtered_targets,
                     weighting_strategy=self.weighting_strategy,
@@ -351,7 +360,8 @@ class MultiTaskTrainer:
                 videos = videos.to(self.device)
                 
                 # Forward pass
-                if self.model.multi_task:
+                base_model = self._get_base_model()
+                if base_model.multi_task:
                     logits_dict, extras = self.model(videos, clip_mask=clip_masks, return_dict=True)
                     
                     # Handle target format for multi-task
@@ -403,7 +413,8 @@ class MultiTaskTrainer:
         }
         
         # Compute detailed metrics if requested
-        if compute_detailed_metrics and self.model.multi_task:
+        base_model = self._get_base_model()
+        if compute_detailed_metrics and base_model.multi_task:
             # Combine all logits and targets
             combined_logits = {}
             combined_targets = {}
@@ -456,7 +467,7 @@ class MultiTaskTrainer:
             'epoch': self.epoch,
             'step': self.step,
             'best_metrics': self.best_metrics,
-            'model_config': self.model.config if hasattr(self.model, 'config') else {},
+            'model_config': self._get_base_model().config if hasattr(self._get_base_model(), 'config') else {},
             'training_history': dict(self.training_history)
         }
         
@@ -531,7 +542,7 @@ class MultiTaskTrainer:
                 'task_difficulties': self.task_difficulties
             },
             'model_info': {
-                'multi_task': self.model.multi_task,
+                'multi_task': self._get_base_model().multi_task,
                 'total_parameters': sum(p.numel() for p in self.model.parameters()),
                 'trainable_parameters': sum(p.numel() for p in self.model.parameters() if p.requires_grad)
             },
