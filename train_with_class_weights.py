@@ -1523,7 +1523,9 @@ def main():
                 logger.info(f"   {group_name}: {group['lr']:.2e}")
             
             # Apply gradual unfreezing if scheduled
-            apply_gradual_unfreezing(model, epoch, unfreeze_schedule, logger, trainer, args, optimizer)
+            # Handle DataParallel case for model.backbone access
+            model_for_unfreezing = model.module if hasattr(model, 'module') else model
+            apply_gradual_unfreezing(model_for_unfreezing, epoch, unfreeze_schedule, logger, trainer, args, optimizer)
             
             # Training
             model.train()
