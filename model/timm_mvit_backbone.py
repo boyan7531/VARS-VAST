@@ -131,7 +131,7 @@ class VideoMMAction2MViTBackbone(nn.Module):
                 # Let PyTorchVideo download/cache the official K400 weights.
                 base_model = mvit_base_32x3(pretrained=True)
                 self._built_in_weights_loaded = True
-                print("✅ Loaded PyTorchVideo Kinetics-400 pretrained weights (MViTv2-B 32×3)")
+                print("Loaded PyTorchVideo Kinetics-400 pretrained weights (MViTv2-B 32x3)")
             else:
                 # Either training from scratch or we'll load an external ckpt.
                 base_model = mvit_base_32x3(pretrained=False)
@@ -147,7 +147,7 @@ class VideoMMAction2MViTBackbone(nn.Module):
                 if pretrained and checkpoint_path is None:
                     base_model = mvit_v2_s(weights=MViT_V2_S_Weights.KINETICS400_V1)
                     self._built_in_weights_loaded = True
-                    print("✅ Loaded torchvision Kinetics-400 pretrained weights (MViTv2-S)")
+                    print("Loaded torchvision Kinetics-400 pretrained weights (MViTv2-S)")
                 else:
                     base_model = mvit_v2_s(weights=None)
                     self._built_in_weights_loaded = False
@@ -156,7 +156,7 @@ class VideoMMAction2MViTBackbone(nn.Module):
 
             except Exception as tv_exc:
                 # 3) Ultimate fallback – minimal stub implementation.
-                print("⚠️  Falling back to minimal stub MViT implementation "
+                print("WARNING: Falling back to minimal stub MViT implementation "
                       f"(PyTorchVideo error: {ptv_exc}; torchvision error: {tv_exc})")
                 model = self._create_minimal_mvit()
 

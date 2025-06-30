@@ -909,15 +909,15 @@ def main():
     
     # Print clear summary of what this training will do
     print("\n" + "="*80)
-    print("🚀 MVFOULS 3-TASK MULTI-TASK TRAINING")
+    print("MVFOULS 3-TASK MULTI-TASK TRAINING")
     print("="*80)
-    print("📋 This model will predict EXACTLY 3 tasks:")
-    print("   1️⃣  action_class (10 classes): What type of action occurred")
-    print("       • Standing tackling, Tackling, Challenge, Holding, Elbowing, etc.")
-    print("   2️⃣  severity (6 classes): How severe was the action")  
-    print("       • Missing, 1, 2, 3, 4, 5")
-    print("   3️⃣  offence (4 classes): Final judgment on the action")
-    print("       • Missing/Empty, Offence, No offence, Between")
+    print("This model will predict EXACTLY 3 tasks:")
+    print("   1. action_class (10 classes): What type of action occurred")
+    print("       - Standing tackling, Tackling, Challenge, Holding, Elbowing, etc.")
+    print("   2. severity (6 classes): How severe was the action")  
+    print("       - Missing, 1, 2, 3, 4, 5")
+    print("   3. offence (4 classes): Final judgment on the action")
+    print("       - Missing/Empty, Offence, No offence, Between")
     print("="*80)
     
     logger.info(f"🚀 Starting balanced MVFouls training")
