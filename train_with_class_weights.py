@@ -1419,14 +1419,13 @@ def main():
         device, model, is_multi_gpu = setup_device_and_model(args, model, gpu_info)
         
         # Move class weights to device if they exist
-        if hasattr(model.head, 'task_weights') and model.head.task_weights:
-            for task_name, weights in model.head.task_weights.items():
+        # Handle DataParallel case where we need to access model.module.head
+        model_head = model.module.head if hasattr(model, 'module') else model.head
+        
+        if hasattr(model_head, 'task_weights') and model_head.task_weights:
+            for task_name, weights in model_head.task_weights.items():
                 if isinstance(weights, torch.Tensor):
-                    # Handle DataParallel case where model.head might be wrapped
-                    if is_multi_gpu and hasattr(model, 'module'):
-                        model.module.head.task_weights[task_name] = weights.to(device)
-                    else:
-                        model.head.task_weights[task_name] = weights.to(device)
+                    model_head.task_weights[task_name] = weights.to(device)
         
         # Calculate effective batch sizes for multi-GPU
         effective_batch_size, per_gpu_batch_size = get_effective_batch_size(args, is_multi_gpu, gpu_info['num_gpus'])
