@@ -49,9 +49,6 @@ class VideoTemporalJitter:
         return sample
 
 
-
-
-
 class VideoResizeKeepAspectRatio:
     """Resize video maintaining aspect ratio with shortest side target."""
     
@@ -316,6 +313,266 @@ class VideoRandomErasing:
         return frame
 
 
+class VideoRandomResizedCrop:
+    """
+    Random resized crop for videos (multi-scale crop strategy).
+    
+    This replaces the traditional resize-then-crop with a more advanced
+    strategy that samples random crop sizes and aspect ratios.
+    """
+    
+    def __init__(self, size: Union[int, Tuple[int, int]], 
+                 scale: Tuple[float, float] = (0.8, 1.2), 
+                 ratio: Tuple[float, float] = (3./4., 4./3.),
+                 interpolation=cv2.INTER_LINEAR):
+        """
+        Args:
+            size: Target size as (height, width) or single int for square
+            scale: Range of size of the random crop relative to the original image
+            ratio: Range of aspect ratio of the random crop
+            interpolation: OpenCV interpolation method
+        """
+        if isinstance(size, int):
+            self.size = (size, size)
+        else:
+            self.size = size
+        self.scale = scale
+        self.ratio = ratio
+        self.interpolation = interpolation
+    
+    def __call__(self, sample: Dict) -> Dict:
+        video = sample['video']  # Shape: (T, H, W, C)
+        
+        if isinstance(video, torch.Tensor):
+            video = video.numpy()
+        
+        t, h, w, c = video.shape
+        area = h * w
+        h_target, w_target = self.size
+        
+        # Try to find a valid crop
+        for _ in range(100):
+            target_area = random.uniform(self.scale[0], self.scale[1]) * area
+            aspect_ratio = random.uniform(self.ratio[0], self.ratio[1])
+            
+            crop_w = int(round(math.sqrt(target_area * aspect_ratio)))
+            crop_h = int(round(math.sqrt(target_area / aspect_ratio)))
+            
+            if crop_w <= w and crop_h <= h:
+                # Random crop position
+                x = random.randint(0, w - crop_w)
+                y = random.randint(0, h - crop_h)
+                
+                # Crop all frames
+                cropped_frames = []
+                for frame in video:
+                    cropped_frame = frame[y:y+crop_h, x:x+crop_w]
+                    # Resize to target size
+                    resized_frame = cv2.resize(cropped_frame, (w_target, h_target), 
+                                             interpolation=self.interpolation)
+                    cropped_frames.append(resized_frame)
+                
+                sample['video'] = np.stack(cropped_frames, axis=0)
+                return sample
+        
+        # Fallback: center crop and resize
+        crop_h, crop_w = min(h, w), min(h, w)
+        y = (h - crop_h) // 2
+        x = (w - crop_w) // 2
+        
+        cropped_frames = []
+        for frame in video:
+            cropped_frame = frame[y:y+crop_h, x:x+crop_w]
+            resized_frame = cv2.resize(cropped_frame, (w_target, h_target), 
+                                     interpolation=self.interpolation)
+            cropped_frames.append(resized_frame)
+        
+        sample['video'] = np.stack(cropped_frames, axis=0)
+        return sample
+
+
+class VideoRandomRotation:
+    """
+    Random rotation of video frames followed by center crop.
+    
+    Designed for football footage where small rotations (±8°) keep
+    the pitch lines looking natural.
+    """
+    
+    def __init__(self, degrees: float = 8.0, p: float = 0.5):
+        """
+        Args:
+            degrees: Maximum rotation angle in degrees (±degrees)
+            p: Probability of applying rotation
+        """
+        self.degrees = degrees
+        self.p = p
+    
+    def __call__(self, sample: Dict) -> Dict:
+        if random.random() < self.p:
+            video = sample['video']  # Shape: (T, H, W, C)
+            
+            if isinstance(video, torch.Tensor):
+                video = video.numpy()
+            
+            t, h, w, c = video.shape
+            
+            # Sample random rotation angle (same for all frames)
+            angle = random.uniform(-self.degrees, self.degrees)
+            
+            # Compute rotation matrix
+            center = (w // 2, h // 2)
+            rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+            
+            # Apply rotation to all frames
+            rotated_frames = []
+            for frame in video:
+                rotated_frame = cv2.warpAffine(frame, rotation_matrix, (w, h),
+                                             flags=cv2.INTER_LINEAR,
+                                             borderMode=cv2.BORDER_REFLECT_101)
+                rotated_frames.append(rotated_frame)
+            
+            sample['video'] = np.stack(rotated_frames, axis=0)
+        
+        return sample
+
+
+class VideoSpeedPerturbation:
+    """
+    Temporal speed perturbation for video clips.
+    
+    Changes playback speed while maintaining clip length by resampling frames.
+    The center frame (typically frame 75 with the foul) should remain centered.
+    """
+    
+    def __init__(self, speed_factors: List[float] = [0.75, 1.25], p: float = 0.5):
+        """
+        Args:
+            speed_factors: List of speed multiplication factors
+            p: Probability of applying speed perturbation
+        """
+        self.speed_factors = speed_factors
+        self.p = p
+    
+    def __call__(self, sample: Dict) -> Dict:
+        if random.random() < self.p:
+            video = sample['video']  # Shape: (T, H, W, C)
+            
+            if isinstance(video, torch.Tensor):
+                video = video.numpy()
+            
+            t, h, w, c = video.shape
+            
+            # Choose random speed factor
+            speed_factor = random.choice(self.speed_factors)
+            
+            if speed_factor != 1.0:
+                # Calculate new temporal indices
+                # We want to keep the center frame (t//2) at the center
+                center_frame = t // 2
+                
+                # Create indices for resampling
+                # For speed_factor > 1.0: sample more frames (faster playback)
+                # For speed_factor < 1.0: sample fewer frames (slower playback)
+                new_indices = np.linspace(0, t - 1, int(t * speed_factor))
+                
+                # Clip indices to valid range
+                new_indices = np.clip(new_indices, 0, t - 1)
+                
+                # Resample frames using interpolation
+                resampled_frames = []
+                for i in range(c):  # Process each channel
+                    channel_frames = video[:, :, :, i]  # Shape: (T, H, W)
+                    
+                    # Interpolate along temporal dimension
+                    resampled_channel = np.zeros((t, h, w), dtype=video.dtype)
+                    for idx in range(t):
+                        if idx < len(new_indices):
+                            # Linear interpolation between frames
+                            float_idx = new_indices[idx] if idx < len(new_indices) else new_indices[-1]
+                            int_idx = int(float_idx)
+                            frac = float_idx - int_idx
+                            
+                            if int_idx >= t - 1:
+                                resampled_channel[idx] = channel_frames[t - 1]
+                            elif frac == 0:
+                                resampled_channel[idx] = channel_frames[int_idx]
+                            else:
+                                # Linear interpolation
+                                frame1 = channel_frames[int_idx].astype(np.float32)
+                                frame2 = channel_frames[int_idx + 1].astype(np.float32)
+                                interpolated = (1 - frac) * frame1 + frac * frame2
+                                resampled_channel[idx] = interpolated.astype(video.dtype)
+                        else:
+                            # Pad with last frame
+                            resampled_channel[idx] = channel_frames[-1]
+                    
+                    resampled_frames.append(resampled_channel)
+                
+                # Stack channels back together
+                video = np.stack(resampled_frames, axis=-1)  # Shape: (T, H, W, C)
+            
+            sample['video'] = video
+        
+        return sample
+
+
+class VideoPerspectiveWarp:
+    """
+    Apply mild perspective warp to simulate camera banking or lens distortion.
+    
+    Uses small random displacements to corner points to create subtle
+    perspective effects that don't make the football pitch look unrealistic.
+    """
+    
+    def __init__(self, max_displacement: float = 0.15, p: float = 0.3):
+        """
+        Args:
+            max_displacement: Maximum displacement as fraction of image size
+            p: Probability of applying perspective warp
+        """
+        self.max_displacement = max_displacement
+        self.p = p
+    
+    def __call__(self, sample: Dict) -> Dict:
+        if random.random() < self.p:
+            video = sample['video']  # Shape: (T, H, W, C)
+            
+            if isinstance(video, torch.Tensor):
+                video = video.numpy()
+            
+            t, h, w, c = video.shape
+            
+            # Calculate maximum pixel displacement
+            max_disp_h = int(h * self.max_displacement)
+            max_disp_w = int(w * self.max_displacement)
+            
+            # Original corner points
+            src_points = np.float32([[0, 0], [w-1, 0], [w-1, h-1], [0, h-1]])
+            
+            # Add random displacement to corner points
+            dst_points = src_points.copy()
+            for i in range(4):
+                dx = random.uniform(-max_disp_w, max_disp_w)
+                dy = random.uniform(-max_disp_h, max_disp_h)
+                dst_points[i] += [dx, dy]
+            
+            # Compute perspective transformation matrix
+            perspective_matrix = cv2.getPerspectiveTransform(src_points, dst_points)
+            
+            # Apply same transformation to all frames
+            warped_frames = []
+            for frame in video:
+                warped_frame = cv2.warpPerspective(frame, perspective_matrix, (w, h),
+                                                 flags=cv2.INTER_LINEAR,
+                                                 borderMode=cv2.BORDER_REFLECT_101)
+                warped_frames.append(warped_frame)
+            
+            sample['video'] = np.stack(warped_frames, axis=0)
+        
+        return sample
+
+
 # Composed augmentation pipelines
 def get_base_augmentations(image_size: int = 224) -> VideoCompose:
     """
@@ -395,6 +652,63 @@ def get_minimal_augmentations(image_size: int = 224) -> VideoCompose:
     ])
 
 
+def get_advanced_augmentations(image_size: int = 224) -> VideoCompose:
+    """
+    Get advanced augmentations with the full proposed strategy.
+    
+    Implements the complete augmentation strategy:
+    8. Speed perturbation {0.75×, 1.25×}
+    9. Random rotation ±8° followed by centre crop
+    10. Perspective warp (p=0.3, |θ| < 0.15)
+    11. Multi-scale crop (scale 0.8–1.2, ratio 3/4–4/3)
+    12. Video MixUp / TimeMix - handled in collate function
+    13. ClipCutMix - handled in collate function
+    
+    Args:
+        image_size: Target image size
+        
+    Returns:
+        Composed video transforms for advanced augmentation
+    """
+    return VideoCompose([
+        # 1. Speed perturbation {0.75×, 1.25×} (p=0.5)
+        VideoSpeedPerturbation(speed_factors=[0.75, 1.25], p=0.5),
+        
+        # 2. Multi-scale crop (scale 0.8–1.2, ratio 3/4–4/3)
+        VideoRandomResizedCrop(
+            size=image_size, 
+            scale=(0.8, 1.2), 
+            ratio=(3./4., 4./3.)
+        ),
+        
+        # 3. Random rotation ±8° (p=0.5)
+        VideoRandomRotation(degrees=8.0, p=0.5),
+        
+        # 4. Perspective warp (p=0.3, |θ| < 0.15)
+        VideoPerspectiveWarp(max_displacement=0.15, p=0.3),
+        
+        # 5. Random horizontal flip (p=0.5)
+        VideoRandomHorizontalFlip(p=0.5),
+        
+        # 6. Color jitter (brightness/contrast/saturation=0.2, hue=0.1)
+        VideoColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+        
+        # 7. Gaussian blur OR Gaussian noise (p=0.2 total)
+        VideoGaussianBlur(kernel_size=5, sigma=0.05, p=0.1),
+        VideoGaussianNoise(sigma=0.05, p=0.1),
+        
+        # 8. Random erasing per frame (p=0.3, area 2-10%)
+        VideoRandomErasing(p=0.3, scale=(0.02, 0.10), ratio=(0.8, 1.25), value='random'),
+        
+        # Convert to tensor and normalize
+        VideoToTensor(),
+        VideoNormalize(
+            mean=[0.485, 0.456, 0.406],  # ImageNet mean
+            std=[0.229, 0.224, 0.225]    # ImageNet std
+        )
+    ])
+
+
 # Integration with existing transform system
 def get_augmented_transforms(image_size: int = 224, augment_level: str = 'base') -> Dict[str, VideoCompose]:
     """
@@ -402,12 +716,14 @@ def get_augmented_transforms(image_size: int = 224, augment_level: str = 'base')
     
     Args:
         image_size: Target image size
-        augment_level: 'base', 'minimal', or 'none'
+        augment_level: 'advanced', 'base', 'minimal', or 'none'
         
     Returns:
         Dict with 'train' and 'val' transforms
     """
-    if augment_level == 'base':
+    if augment_level == 'advanced':
+        train_transforms = get_advanced_augmentations(image_size)
+    elif augment_level == 'base':
         train_transforms = get_base_augmentations(image_size)
     elif augment_level == 'minimal':
         train_transforms = get_minimal_augmentations(image_size)

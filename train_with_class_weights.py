@@ -836,6 +836,25 @@ def main():
     parser.add_argument('--clip-pooling-temperature', type=float, default=1.0,
                         help='Temperature for attention pooling in bag-of-clips mode (default: 1.0)')
     
+    # Add advanced augmentation arguments
+    parser.add_argument('--augment-level', type=str, default='base',
+                        choices=['none', 'minimal', 'base', 'advanced'],
+                        help='Augmentation level to use: none (validation only), minimal (basic), base (current), advanced (new strategy) (default: base)')
+    parser.add_argument('--mixup-prob', type=float, default=0.5,
+                        help='Probability of applying MixUp augmentation (default: 0.5)')
+    parser.add_argument('--cutmix-prob', type=float, default=0.3,
+                        help='Probability of applying CutMix augmentation (default: 0.3)')
+    parser.add_argument('--mixup-alpha', type=float, default=0.3,
+                        help='Alpha parameter for MixUp Beta distribution (default: 0.3)')
+    parser.add_argument('--cutmix-alpha', type=float, default=1.0,
+                        help='Alpha parameter for CutMix Beta distribution (default: 1.0)')
+    parser.add_argument('--minority-only-cutmix', action='store_true',
+                        help='Only apply CutMix between minority class samples')
+    parser.add_argument('--same-class-mixup', action='store_true', default=True,
+                        help='Only apply MixUp between samples with same action_class')
+    parser.add_argument('--minority-boost-factor', type=float, default=2.0,
+                        help='Extra boost factor for minority classes in sampling (default: 2.0)')
+    
     args = parser.parse_args()
     
     # Parse and validate loss types configuration
@@ -926,15 +945,35 @@ def main():
     logger.info(f"Target tasks: action_class, severity, offence")
     
     try:
-        # Create transforms with new base augmentations
+        # Create transforms with specified augmentation level
         try:
             from augmentation import get_augmented_transforms
-            transforms = get_augmented_transforms(image_size=224, augment_level='base')
-            logger.info("🎨 Using new base augmentation pipeline")
+            transforms = get_augmented_transforms(image_size=224, augment_level=args.augment_level)
+            logger.info(f"🎨 Using {args.augment_level} augmentation pipeline")
         except ImportError:
             # Fallback to original transforms if augmentation module not available
             transforms = get_video_transforms(image_size=224, augment_train=True)
             logger.info("📹 Using original transform pipeline (fallback)")
+            
+        # Import advanced dataloader utilities if using advanced augmentations
+        advanced_collate_fn = None
+        if args.augment_level == 'advanced' and (args.mixup_prob > 0 or args.cutmix_prob > 0):
+            try:
+                from advanced_dataloader import create_mixup_cutmix_collate_fn, create_minority_boost_sampler
+                advanced_collate_fn = create_mixup_cutmix_collate_fn(
+                    mixup_prob=args.mixup_prob,
+                    cutmix_prob=args.cutmix_prob,
+                    mixup_alpha=args.mixup_alpha,
+                    cutmix_alpha=args.cutmix_alpha,
+                    minority_only_cutmix=args.minority_only_cutmix,
+                    same_class_mixup=args.same_class_mixup
+                )
+                logger.info(f"🧬 Advanced MixUp/CutMix collate function enabled")
+                logger.info(f"   MixUp prob: {args.mixup_prob}, CutMix prob: {args.cutmix_prob}")
+                logger.info(f"   Same class MixUp: {args.same_class_mixup}, Minority only CutMix: {args.minority_only_cutmix}")
+            except ImportError as e:
+                logger.warning(f"Could not import advanced dataloader utilities: {e}")
+                logger.warning("Using standard augmentations without MixUp/CutMix")
         
         # Create datasets
         logger.info("📂 Creating datasets...")
@@ -1145,15 +1184,33 @@ def main():
                 logger.info(f"🎯 Creating joint balanced sampler for tasks: {balance_tasks}")
                 logger.info("   📊 Joint balancing ensures both tasks are balanced together")
             
-            train_sampler = create_balanced_sampler(train_dataset, balance_tasks)
+            # Use enhanced minority boost sampler if advanced augmentations are enabled
+            if args.augment_level == 'advanced' and 'create_minority_boost_sampler' in locals():
+                try:
+                    train_sampler = create_minority_boost_sampler(
+                        train_dataset, 
+                        boost_factor=args.minority_boost_factor,
+                        task_name=balance_tasks[0] if balance_tasks else 'action_class'
+                    )
+                    logger.info(f"🚀 Enhanced minority boost sampler enabled (boost factor: {args.minority_boost_factor}x)")
+                except Exception as e:
+                    logger.warning(f"Failed to create minority boost sampler: {e}")
+                    train_sampler = create_balanced_sampler(train_dataset, balance_tasks)
+            else:
+                train_sampler = create_balanced_sampler(train_dataset, balance_tasks)
+            
             shuffle = False  # Cannot shuffle when using custom sampler
             logger.info("✅ Option A: WeightedRandomSampler enabled")
         else:
             logger.info("⚠️  Option A: WeightedRandomSampler disabled (use --balanced-sampling to enable)")
         
-        # Choose collate function based on mode
-        collate_fn = bag_of_clips_collate_fn if args.bag_of_clips else None
-        
+        # Choose collate function based on mode and augmentation level
+        collate_fn = None
+        if args.bag_of_clips:
+            collate_fn = bag_of_clips_collate_fn
+        elif advanced_collate_fn is not None:
+            collate_fn = advanced_collate_fn
+            
         train_loader = DataLoader(
             train_dataset,
             batch_size=args.batch_size,
