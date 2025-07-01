@@ -845,7 +845,9 @@ def main():
     # Training arguments
     parser.add_argument('--epochs', type=int, default=20, help='Number of epochs')
     parser.add_argument('--batch-size', type=int, default=8, help='Batch size')
-    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
+    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate (legacy global value)')
+    parser.add_argument('--head-lr', type=float, default=None, help='Learning rate for classifier head (defaults to --lr)')
+    parser.add_argument('--backbone-lr', type=float, default=None, help='Learning rate for backbone (defaults to --lr)')
     parser.add_argument('--weight-decay', type=float, default=1e-4, help='Weight decay')
     parser.add_argument('--freeze-mode', type=str, default='gradual', help='Backbone freeze mode')
     
@@ -984,6 +986,14 @@ def main():
                         help='Multi-GPU strategy: none (single GPU), dataparallel (2-8 GPUs), distributed (not implemented), auto (recommend dataparallel)')
     
     args = parser.parse_args()
+    
+    # ------------------------------------------------------------------
+    # 🔧 Handle default learning rates if specific ones are not provided
+    # ------------------------------------------------------------------
+    if args.head_lr is None:
+        args.head_lr = args.lr
+    if args.backbone_lr is None:
+        args.backbone_lr = args.lr
     
     # Parse and validate loss types configuration
     loss_types_per_task = {}
@@ -1396,13 +1406,13 @@ def main():
         param_groups = [
             {
                 'params': head_params,
-                'lr': args.lr,
+                'lr': args.head_lr,
                 'weight_decay': args.weight_decay,
                 'name': 'head'
             },
             {
                 'params': backbone_params,
-                'lr': args.lr,
+                'lr': args.backbone_lr,
                 'weight_decay': args.weight_decay,
                 'name': 'backbone'
             }
@@ -1494,7 +1504,8 @@ def main():
         # Log adaptive learning rate configuration
         if args.adaptive_lr:
             logger.info("🔧 Adaptive learning rate scaling enabled:")
-            logger.info(f"   Base LR: {args.lr:.2e}")
+            logger.info(f"   Head LR: {args.head_lr:.2e}")
+            logger.info(f"   Backbone LR: {args.backbone_lr:.2e}")
             logger.info(f"   Minor unfreezing scale: {args.lr_scale_minor}x")
             logger.info(f"   Major unfreezing scale: {args.lr_scale_major}x")
             logger.info(f"   Massive unfreezing scale: {args.lr_scale_massive}x")
