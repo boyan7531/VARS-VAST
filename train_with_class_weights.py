@@ -800,6 +800,10 @@ def main():
     parser.add_argument('--context-task-weight', type=float, default=0.5,
                         help='Weight for unexpected tasks (should not be used) (default: 0.5)')
     
+    # Add per-class threshold optimization flag
+    parser.add_argument('--save-val-logits', action='store_true',
+                        help='Save validation logits for per-class threshold optimization')
+    
     # Loss configuration arguments
     parser.add_argument('--loss-types', nargs='+',
                         help='Per-task loss types in canonical task order '
@@ -1322,6 +1326,19 @@ def main():
                 format_metrics_table=format_metrics_table
             )
             
+            # Save validation logits if requested
+            if args.save_val_logits:
+                val_logits_path = output_dir / f'val_logits_epoch_{epoch+1:02d}.pt'
+                logits_data = {
+                    'epoch': epoch + 1,
+                    'logits': val_results.get('all_logits', []),
+                    'targets': val_results.get('all_targets', []),
+                    'model_config': model.config,
+                    'task_names': getattr(model.head, 'task_names', ['default'])
+                }
+                torch.save(logits_data, val_logits_path)
+                logger.info(f"💾 Saved validation logits: {val_logits_path.name}")
+            
             # Log metrics
             avg_train_loss = sum(m['total_loss'] for m in train_metrics) / len(train_metrics)
             val_loss = val_results['avg_loss']
@@ -1390,6 +1407,45 @@ def main():
         
         writer.close()
         logger.info("🎉 Training completed successfully!")
+        
+        # Compute thresholds if validation logits were saved
+        if args.save_val_logits:
+            logger.info("🎯 Computing optimal decision thresholds...")
+            
+            # Find the latest validation logits file
+            val_logits_files = sorted(output_dir.glob('val_logits_epoch_*.pt'))
+            if val_logits_files:
+                latest_logits_file = val_logits_files[-1]
+                thresholds_output = output_dir / 'thresholds.json'
+                
+                # Compute thresholds using the script
+                import subprocess
+                import sys
+                
+                cmd = [
+                    sys.executable, 'scripts/compute_thresholds.py',
+                    '--logits-file', str(latest_logits_file),
+                    '--output', str(thresholds_output),
+                    '--metric', 'youden',  # Default metric
+                    '--task', 'all'
+                ]
+                
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, cwd=Path(__file__).parent)
+                    if result.returncode == 0:
+                        logger.info(f"✅ Thresholds computed successfully: {thresholds_output.name}")
+                        logger.info("📋 Threshold computation output:")
+                        for line in result.stdout.strip().split('\n'):
+                            if line.strip():
+                                logger.info(f"   {line}")
+                    else:
+                        logger.error("❌ Threshold computation failed!")
+                        logger.error(f"   stdout: {result.stdout}")
+                        logger.error(f"   stderr: {result.stderr}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to run threshold computation: {e}")
+            else:
+                logger.warning("⚠️ No validation logits files found for threshold computation")
         
         # Final backbone status
         if args.freeze_mode == 'gradual':

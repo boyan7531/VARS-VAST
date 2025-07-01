@@ -441,6 +441,10 @@ class MultiTaskTrainer:
                 if format_metrics_table is not None:
                     results['metrics_table'] = format_metrics_table(task_metrics)
         
+        # Include raw logits and targets for threshold optimization
+        results['all_logits'] = all_logits
+        results['all_targets'] = all_targets
+        
         return results
     
     def save_checkpoint(

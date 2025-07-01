@@ -44,6 +44,12 @@ except ImportError:
     compute_overall_metrics = None
     get_mvfouls_class_weights = None
 
+# Import thresholding utilities
+try:
+    from thresholding import predict_with_thresholds
+except ImportError:
+    predict_with_thresholds = None
+
 
 class MVFoulsModel(nn.Module):
     """
@@ -374,16 +380,21 @@ class MVFoulsModel(nn.Module):
     def predict(
         self, 
         x: torch.Tensor, 
+        thresholds: Optional[Union[List[float], torch.Tensor, Dict[str, List[float]]]] = None,
         return_probs: bool = False,
-        temperature: float = 1.0
+        temperature: float = 1.0,
+        fallback_strategy: str = 'argmax'
     ) -> Dict[str, Any]:
         """
-        Make predictions on input video.
+        Make predictions on input video with optional per-class thresholds.
         
         Args:
             x: Input video tensor
+            thresholds: Optional per-class thresholds. For single-task: list/tensor of shape (num_classes,).
+                       For multi-task: dict mapping task names to threshold lists.
             return_probs: Whether to return probabilities
             temperature: Temperature for probability calibration
+            fallback_strategy: Strategy when no class exceeds threshold ('argmax', 'none', 'highest_prob')
             
         Returns:
             Dict containing predictions, probabilities, and metadata
@@ -405,7 +416,18 @@ class MVFoulsModel(nn.Module):
                     
                     # Get predictions
                     task_probs = F.softmax(task_logits, dim=1)
-                    task_preds = torch.argmax(task_logits, dim=1)
+                    
+                    # Use thresholds if provided and available
+                    if thresholds is not None and isinstance(thresholds, dict) and task_name in thresholds:
+                        if predict_with_thresholds is not None:
+                            task_preds = predict_with_thresholds(
+                                task_probs, thresholds[task_name], fallback_strategy
+                            )
+                        else:
+                            # Fallback to argmax if thresholding utilities not available
+                            task_preds = torch.argmax(task_logits, dim=1)
+                    else:
+                        task_preds = torch.argmax(task_logits, dim=1)
                     
                     predictions[task_name] = task_preds
                     if return_probs:
@@ -429,7 +451,16 @@ class MVFoulsModel(nn.Module):
                 
                 # Get predictions
                 probs = F.softmax(logits, dim=1)
-                preds = torch.argmax(logits, dim=1)
+                
+                # Use thresholds if provided and available
+                if thresholds is not None and not isinstance(thresholds, dict):
+                    if predict_with_thresholds is not None:
+                        preds = predict_with_thresholds(probs, thresholds, fallback_strategy)
+                    else:
+                        # Fallback to argmax if thresholding utilities not available
+                        preds = torch.argmax(logits, dim=1)
+                else:
+                    preds = torch.argmax(logits, dim=1)
                 
                 result = {
                     'predictions': preds,
