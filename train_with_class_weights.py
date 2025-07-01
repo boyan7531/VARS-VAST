@@ -28,15 +28,11 @@ import argparse
 import json
 import logging
 import sys
-import os
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, List
 from contextlib import nullcontext
 from collections import Counter
-from datetime import datetime
-import warnings
-import random
 
 import torch
 import torch.optim as optim
@@ -44,8 +40,6 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
-# Multi-GPU imports
-from torch.nn.parallel import DataParallel
 
 # Add project root to path
 sys.path.append(str(Path(__file__).parent))
@@ -64,8 +58,6 @@ from utils import (
     format_metrics_table
 )
 
-warnings.filterwarnings('ignore')
-
 
 def setup_logging(level: str = 'INFO'):
     """Setup logging configuration."""
@@ -77,126 +69,6 @@ def setup_logging(level: str = 'INFO'):
         ]
     )
     return logging.getLogger(__name__)
-
-
-def get_gpu_info():
-    """Get information about available GPUs."""
-    if not torch.cuda.is_available():
-        return {
-            'num_gpus': 0,
-            'gpu_names': [],
-            'total_memory': 0,
-            'support_multi_gpu': False
-        }
-    
-    num_gpus = torch.cuda.device_count()
-    gpu_names = []
-    total_memory = 0
-    
-    for i in range(num_gpus):
-        props = torch.cuda.get_device_properties(i)
-        gpu_names.append(f"{props.name} ({props.total_memory // 1024**3}GB)")
-        total_memory += props.total_memory
-    
-    return {
-        'num_gpus': num_gpus,
-        'gpu_names': gpu_names,
-        'total_memory': total_memory // 1024**3,  # Convert to GB
-        'support_multi_gpu': num_gpus > 1
-    }
-
-
-
-
-
-def setup_device_and_model(args, model, gpu_info):
-    """Setup device configuration and wrap model for multi-GPU if needed."""
-    logger = logging.getLogger(__name__)
-    
-    # Single GPU or CPU
-    if args.multi_gpu == 'none' or gpu_info['num_gpus'] <= 1:
-        if args.device == 'auto':
-            device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-        else:
-            device = torch.device(args.device)
-        
-        model = model.to(device)
-        logger.info(f"🔧 Using single device: {device}")
-        return device, model, False
-    
-    # Multi-GPU setup
-    if not gpu_info['support_multi_gpu']:
-        logger.warning("❌ Multi-GPU requested but only 1 GPU available. Using single GPU.")
-        device = torch.device('cuda:0')
-        model = model.to(device)
-        return device, model, False
-    
-    # Auto-select best multi-GPU strategy
-    if args.multi_gpu == 'auto':
-        # For 2-8 GPUs, DataParallel is simpler and well-supported
-        # For >8 GPUs, would need DistributedDataParallel (not implemented)
-        if gpu_info['num_gpus'] <= 8:
-            args.multi_gpu = 'dataparallel'
-            logger.info(f"🤖 Auto-selected DataParallel for {gpu_info['num_gpus']} GPUs")
-        else:
-            logger.error(f"❌ {gpu_info['num_gpus']} GPUs detected - DistributedDataParallel needed but not implemented")
-            logger.error("   Use --multi-gpu dataparallel for up to 8 GPUs")
-            raise NotImplementedError(f"Too many GPUs ({gpu_info['num_gpus']}) for current implementation")
-    
-    # Setup DataParallel
-    if args.multi_gpu == 'dataparallel':
-        device = torch.device('cuda:0')
-        model = model.to(device)
-        
-        # Check if model can be parallelized
-        if torch.cuda.device_count() > 1:
-            gpu_ids = list(range(torch.cuda.device_count()))
-            model = DataParallel(model, device_ids=gpu_ids)
-            logger.info(f"🚀 DataParallel enabled on {len(gpu_ids)} GPUs: {gpu_ids}")
-            logger.info(f"📊 Total GPU memory: {gpu_info['total_memory']}GB")
-            for i, name in enumerate(gpu_info['gpu_names']):
-                logger.info(f"   GPU {i}: {name}")
-        else:
-            logger.warning("⚠️  DataParallel requested but <2 GPUs available")
-        
-        return device, model, True
-    
-    # DistributedDataParallel (for advanced users with >4 GPUs)
-    elif args.multi_gpu == 'distributed':
-        logger.error("❌ DistributedDataParallel not fully implemented in this version")
-        logger.error("   Use --multi-gpu dataparallel for dual GPU training")
-        logger.error("   Or --multi-gpu auto to automatically select best strategy")
-        raise NotImplementedError("DistributedDataParallel requires additional setup")
-    
-    else:
-        raise ValueError(f"Invalid multi_gpu option: {args.multi_gpu}")
-
-
-def get_effective_batch_size(args, is_multi_gpu, gpu_count):
-    """Calculate effective batch size for multi-GPU training."""
-    if is_multi_gpu and args.multi_gpu == 'dataparallel':
-        # DataParallel splits batch across GPUs
-        effective_batch_size = args.batch_size
-        per_gpu_batch_size = args.batch_size // gpu_count
-        return effective_batch_size, per_gpu_batch_size
-    elif is_multi_gpu and args.multi_gpu == 'distributed':
-        # DistributedDataParallel: each process gets full batch_size (not implemented)
-        per_gpu_batch_size = args.batch_size
-        effective_batch_size = args.batch_size * gpu_count
-        return effective_batch_size, per_gpu_batch_size
-    else:
-        return args.batch_size, args.batch_size
-
-
-def validate_multi_gpu_batch_size(args, gpu_count):
-    """Validate and adjust batch size for multi-GPU training."""
-    if args.multi_gpu == 'dataparallel' and args.batch_size < gpu_count:
-        logger = logging.getLogger(__name__)
-        logger.warning(f"⚠️  Batch size ({args.batch_size}) < GPU count ({gpu_count})")
-        logger.warning(f"   Adjusting batch size to {gpu_count} (minimum for DataParallel)")
-        args.batch_size = gpu_count
-    
-    return args.batch_size
 
 
 def get_unfreeze_schedule(total_epochs: int, freeze_mode: str) -> Dict[int, str]:
@@ -540,7 +412,6 @@ def create_balanced_model(
     loss_types_per_task: Optional[Dict[str, str]] = None,
     use_effective_weights: bool = False,
     freeze_mode: str = 'gradual',
-    backbone_checkpoint_path: Optional[str] = None,
     **model_kwargs
 ) -> MVFoulsModel:
     """
@@ -623,7 +494,6 @@ def create_balanced_model(
             backbone_arch=backbone_arch,
             backbone_pretrained=True,
             backbone_freeze_mode=freeze_mode,
-            backbone_checkpoint_path=backbone_checkpoint_path,
             loss_types_per_task=loss_types_list,  # Pass the list format expected by model
             class_weights=task_weights,
             task_loss_weights=primary_task_weights,
@@ -673,7 +543,6 @@ def create_balanced_model(
             backbone_arch=backbone_arch,
             backbone_pretrained=True,
             backbone_freeze_mode=freeze_mode,
-            backbone_checkpoint_path=backbone_checkpoint_path,
             head_loss_type='ce',  # Always use CrossEntropy
             class_weights=class_weights,
             backbone_checkpointing=backbone_checkpointing,
@@ -695,11 +564,6 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
     Returns:
         WeightedRandomSampler that balances the specified task(s)
     """
-    # PERFORMANCE FIX: Import and cache metadata once outside the loop
-    from utils import get_task_metadata
-    metadata = get_task_metadata()
-    task_names_list = metadata['task_names']
-    
     # Handle Subset datasets (e.g., for smoke tests)
     subset_indices = None
     if hasattr(dataset, 'dataset') and hasattr(dataset, 'indices'):
@@ -732,6 +596,10 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
                         clip_info = base_dataset.action_groups[action_id][0]  # First clip
                         if clip_info.numeric_labels is not None:
                             joint_key = []
+                            from utils import get_task_metadata
+                            metadata = get_task_metadata()
+                            task_names_list = metadata['task_names']
+                            
                             for task_name in task_names:
                                 if task_name in task_names_list:
                                     task_idx = task_names_list.index(task_name)
@@ -746,6 +614,10 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
                     clip_info = base_dataset.action_groups[action_id][0]  # First clip
                     if clip_info.numeric_labels is not None:
                         joint_key = []
+                        from utils import get_task_metadata
+                        metadata = get_task_metadata()
+                        task_names_list = metadata['task_names']
+                        
                         for task_name in task_names:
                             if task_name in task_names_list:
                                 task_idx = task_names_list.index(task_name)
@@ -764,6 +636,11 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
                     clip_info = base_dataset.dataset_index[idx]
                     if clip_info.numeric_labels is not None:
                         joint_key = []
+                        # Get the task indices for the requested tasks
+                        from utils import get_task_metadata
+                        metadata = get_task_metadata()
+                        task_names_list = metadata['task_names']
+                        
                         for task_name in task_names:
                             if task_name in task_names_list:
                                 task_idx = task_names_list.index(task_name)
@@ -776,6 +653,10 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
             for clip_info in base_dataset.dataset_index:
                 if clip_info.numeric_labels is not None:
                     joint_key = []
+                    from utils import get_task_metadata
+                    metadata = get_task_metadata()
+                    task_names_list = metadata['task_names']
+                    
                     for task_name in task_names:
                         if task_name in task_names_list:
                             task_idx = task_names_list.index(task_name)
@@ -845,9 +726,7 @@ def main():
     # Training arguments
     parser.add_argument('--epochs', type=int, default=20, help='Number of epochs')
     parser.add_argument('--batch-size', type=int, default=8, help='Batch size')
-    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate (legacy global value)')
-    parser.add_argument('--head-lr', type=float, default=None, help='Learning rate for classifier head (defaults to --lr)')
-    parser.add_argument('--backbone-lr', type=float, default=None, help='Learning rate for backbone (defaults to --lr)')
+    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--weight-decay', type=float, default=1e-4, help='Weight decay')
     parser.add_argument('--freeze-mode', type=str, default='gradual', help='Backbone freeze mode')
     
@@ -856,10 +735,6 @@ def main():
                         choices=['swin', 'mvit', 'mvitv2_b', 'mvitv2', 'mvitv2_base', 'mvit_v1_b',
                                  'k600', 'kinetics600', 'k400', 'kinetics400', 'pyslowfast', 'true-mvitv2b'],
                         help='Backbone architecture (swin, mvit, timm MViT variants, k600 for Kinetics-600, k400 for Kinetics-400, pyslowfast for PySlowFast optimized MViTv2-B, or true-mvitv2b for exact 52M param implementation)')
-    
-    # Backbone checkpoint path
-    parser.add_argument('--backbone-checkpoint', type=str, default=None,
-                        help='Path to a local checkpoint (.pyth or .pth) to load into the backbone')
     
     # Balance-specific arguments (Option A: WeightedRandomSampler + CrossEntropy)
     parser.add_argument('--analyze-only', action='store_true', help='Only analyze imbalance, dont train')
@@ -961,39 +836,7 @@ def main():
     parser.add_argument('--clip-pooling-temperature', type=float, default=1.0,
                         help='Temperature for attention pooling in bag-of-clips mode (default: 1.0)')
     
-    # Add advanced augmentation arguments
-    parser.add_argument('--augment-level', type=str, default='base',
-                        choices=['none', 'minimal', 'base', 'advanced'],
-                        help='Augmentation level to use: none (validation only), minimal (basic), base (current), advanced (new strategy) (default: base)')
-    parser.add_argument('--mixup-prob', type=float, default=0.5,
-                        help='Probability of applying MixUp augmentation (default: 0.5)')
-    parser.add_argument('--cutmix-prob', type=float, default=0.3,
-                        help='Probability of applying CutMix augmentation (default: 0.3)')
-    parser.add_argument('--mixup-alpha', type=float, default=0.3,
-                        help='Alpha parameter for MixUp Beta distribution (default: 0.3)')
-    parser.add_argument('--cutmix-alpha', type=float, default=1.0,
-                        help='Alpha parameter for CutMix Beta distribution (default: 1.0)')
-    parser.add_argument('--minority-only-cutmix', action='store_true',
-                        help='Only apply CutMix between minority class samples')
-    parser.add_argument('--same-class-mixup', action='store_true', default=True,
-                        help='Only apply MixUp between samples with same action_class')
-    parser.add_argument('--minority-boost-factor', type=float, default=2.0,
-                        help='Extra boost factor for minority classes in sampling (default: 2.0)')
-    
-    # Multi-GPU arguments
-    parser.add_argument('--multi-gpu', type=str, default='none',
-                        choices=['none', 'dataparallel', 'distributed', 'auto'],
-                        help='Multi-GPU strategy: none (single GPU), dataparallel (2-8 GPUs), distributed (not implemented), auto (recommend dataparallel)')
-    
     args = parser.parse_args()
-    
-    # ------------------------------------------------------------------
-    # 🔧 Handle default learning rates if specific ones are not provided
-    # ------------------------------------------------------------------
-    if args.head_lr is None:
-        args.head_lr = args.lr
-    if args.backbone_lr is None:
-        args.backbone_lr = args.lr
     
     # Parse and validate loss types configuration
     loss_types_per_task = {}
@@ -1058,31 +901,7 @@ def main():
     log_level = 'DEBUG' if args.verbose else 'INFO'
     logger = setup_logging(log_level)
     
-    # Get GPU information
-    gpu_info = get_gpu_info()
-    logger = logging.getLogger(__name__)
-    
-    logger.info("🔍 GPU Detection:")
-    logger.info(f"   Available GPUs: {gpu_info['num_gpus']}")
-    if gpu_info['num_gpus'] > 0:
-        logger.info(f"   Total GPU memory: {gpu_info['total_memory']}GB")
-        for i, name in enumerate(gpu_info['gpu_names']):
-            logger.info(f"   GPU {i}: {name}")
-        logger.info(f"   Multi-GPU support: {'✅ Yes' if gpu_info['support_multi_gpu'] else '❌ No'}")
-    else:
-        logger.info("   No CUDA GPUs detected - using CPU")
-    
-    # Validate multi-GPU configuration
-    if args.multi_gpu != 'none' and gpu_info['num_gpus'] <= 1:
-        logger.warning(f"⚠️  Multi-GPU mode '{args.multi_gpu}' requested but only {gpu_info['num_gpus']} GPU(s) available")
-        logger.warning("   Falling back to single GPU mode")
-        args.multi_gpu = 'none'
-    
-    # Validate and adjust batch size for multi-GPU
-    if args.multi_gpu != 'none':
-        validate_multi_gpu_batch_size(args, gpu_info['num_gpus'])
-    
-    # Setup device (will be refined in setup_device_and_model)
+    # Setup device
     if args.device == 'auto':
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     else:
@@ -1090,15 +909,15 @@ def main():
     
     # Print clear summary of what this training will do
     print("\n" + "="*80)
-    print("MVFOULS 3-TASK MULTI-TASK TRAINING")
+    print("🚀 MVFOULS 3-TASK MULTI-TASK TRAINING")
     print("="*80)
-    print("This model will predict EXACTLY 3 tasks:")
-    print("   1. action_class (10 classes): What type of action occurred")
-    print("       - Standing tackling, Tackling, Challenge, Holding, Elbowing, etc.")
-    print("   2. severity (6 classes): How severe was the action")  
-    print("       - Missing, 1, 2, 3, 4, 5")
-    print("   3. offence (4 classes): Final judgment on the action")
-    print("       - Missing/Empty, Offence, No offence, Between")
+    print("📋 This model will predict EXACTLY 3 tasks:")
+    print("   1️⃣  action_class (10 classes): What type of action occurred")
+    print("       • Standing tackling, Tackling, Challenge, Holding, Elbowing, etc.")
+    print("   2️⃣  severity (6 classes): How severe was the action")  
+    print("       • Missing, 1, 2, 3, 4, 5")
+    print("   3️⃣  offence (4 classes): Final judgment on the action")
+    print("       • Missing/Empty, Offence, No offence, Between")
     print("="*80)
     
     logger.info(f"🚀 Starting balanced MVFouls training")
@@ -1107,35 +926,8 @@ def main():
     logger.info(f"Target tasks: action_class, severity, offence")
     
     try:
-        # Create transforms with specified augmentation level
-        try:
-            from augmentation import get_augmented_transforms
-            transforms = get_augmented_transforms(image_size=224, augment_level=args.augment_level)
-            logger.info(f"🎨 Using {args.augment_level} augmentation pipeline")
-        except ImportError:
-            # Fallback to original transforms if augmentation module not available
-            transforms = get_video_transforms(image_size=224, augment_train=True)
-            logger.info("📹 Using original transform pipeline (fallback)")
-            
-        # Import advanced dataloader utilities if using advanced augmentations
-        advanced_collate_fn = None
-        if args.augment_level == 'advanced' and (args.mixup_prob > 0 or args.cutmix_prob > 0):
-            try:
-                from advanced_dataloader import create_mixup_cutmix_collate_fn, create_minority_boost_sampler
-                advanced_collate_fn = create_mixup_cutmix_collate_fn(
-                    mixup_prob=args.mixup_prob,
-                    cutmix_prob=args.cutmix_prob,
-                    mixup_alpha=args.mixup_alpha,
-                    cutmix_alpha=args.cutmix_alpha,
-                    minority_only_cutmix=args.minority_only_cutmix,
-                    same_class_mixup=args.same_class_mixup
-                )
-                logger.info(f"🧬 Advanced MixUp/CutMix collate function enabled")
-                logger.info(f"   MixUp prob: {args.mixup_prob}, CutMix prob: {args.cutmix_prob}")
-                logger.info(f"   Same class MixUp: {args.same_class_mixup}, Minority only CutMix: {args.minority_only_cutmix}")
-            except ImportError as e:
-                logger.warning(f"Could not import advanced dataloader utilities: {e}")
-                logger.warning("Using standard augmentations without MixUp/CutMix")
+        # Create transforms
+        transforms = get_video_transforms(image_size=224, augment_train=True)
         
         # Create datasets
         logger.info("📂 Creating datasets...")
@@ -1157,12 +949,12 @@ def main():
             clip_sampling_strategy=args.clip_sampling_strategy,
             random_start_augmentation=True,  # Enable random start frames for training
             min_start_frame=45,
-            max_start_frame=74,
-            target_size=None  # Let augmentation pipeline handle resizing
+            max_start_frame=74
         )
         
         # Apply fractional subset for smoke tests
         if 0 < args.train_fraction < 1.0:
+            import random
             subset_size = int(len(train_dataset) * args.train_fraction)
             indices = list(range(len(train_dataset)))
             random.shuffle(indices)
@@ -1180,8 +972,7 @@ def main():
             bag_of_clips=args.bag_of_clips,
             max_clips_per_action=args.max_clips_per_action,
             min_clips_per_action=args.min_clips_per_action,
-            clip_sampling_strategy='uniform',  # Use uniform for validation
-            target_size=None  # Let augmentation pipeline handle resizing
+            clip_sampling_strategy='uniform'  # Use uniform for validation
         )
         
         logger.info(f"📊 Dataset sizes: {len(train_dataset)} train, {len(val_dataset)} val")
@@ -1282,8 +1073,7 @@ def main():
             clip_pooling_type=args.clip_pooling_type,
             clip_pooling_temperature=args.clip_pooling_temperature,
             freeze_mode=args.freeze_mode,
-            backbone_arch=args.backbone_arch,
-            backbone_checkpoint_path=args.backbone_checkpoint
+            backbone_arch=args.backbone_arch
         )
         
         # Log bag-of-clips configuration
@@ -1346,33 +1136,15 @@ def main():
                 logger.info(f"🎯 Creating joint balanced sampler for tasks: {balance_tasks}")
                 logger.info("   📊 Joint balancing ensures both tasks are balanced together")
             
-            # Use enhanced minority boost sampler if advanced augmentations are enabled
-            if args.augment_level == 'advanced' and 'create_minority_boost_sampler' in locals():
-                try:
-                    train_sampler = create_minority_boost_sampler(
-                        train_dataset, 
-                        boost_factor=args.minority_boost_factor,
-                        task_name=balance_tasks[0] if balance_tasks else 'action_class'
-                    )
-                    logger.info(f"🚀 Enhanced minority boost sampler enabled (boost factor: {args.minority_boost_factor}x)")
-                except Exception as e:
-                    logger.warning(f"Failed to create minority boost sampler: {e}")
-                    train_sampler = create_balanced_sampler(train_dataset, balance_tasks)
-            else:
-                train_sampler = create_balanced_sampler(train_dataset, balance_tasks)
-            
+            train_sampler = create_balanced_sampler(train_dataset, balance_tasks)
             shuffle = False  # Cannot shuffle when using custom sampler
             logger.info("✅ Option A: WeightedRandomSampler enabled")
         else:
             logger.info("⚠️  Option A: WeightedRandomSampler disabled (use --balanced-sampling to enable)")
         
-        # Choose collate function based on mode and augmentation level
-        collate_fn = None
-        if args.bag_of_clips:
-            collate_fn = bag_of_clips_collate_fn
-        elif advanced_collate_fn is not None:
-            collate_fn = advanced_collate_fn
-            
+        # Choose collate function based on mode
+        collate_fn = bag_of_clips_collate_fn if args.bag_of_clips else None
+        
         train_loader = DataLoader(
             train_dataset,
             batch_size=args.batch_size,
@@ -1394,25 +1166,20 @@ def main():
             collate_fn=collate_fn
         )
         
-        # Setup device and multi-GPU configuration FIRST
-        device, model, is_multi_gpu = setup_device_and_model(args, model, gpu_info)
-        
         # Create optimizer with separate parameter groups for backbone and head
-        # Handle DataParallel case - access underlying model for parameter groups
-        model_for_optimizer = model.module if hasattr(model, 'module') else model
-        backbone_params = list(model_for_optimizer.backbone.parameters())
-        head_params = list(model_for_optimizer.head.parameters())
+        backbone_params = list(model.backbone.parameters())
+        head_params = list(model.head.parameters())
         
         param_groups = [
             {
                 'params': head_params,
-                'lr': args.head_lr,
+                'lr': args.lr,
                 'weight_decay': args.weight_decay,
                 'name': 'head'
             },
             {
                 'params': backbone_params,
-                'lr': args.backbone_lr,
+                'lr': args.lr,
                 'weight_decay': args.weight_decay,
                 'name': 'backbone'
             }
@@ -1426,29 +1193,14 @@ def main():
             T_max=args.epochs
         )
         
+        # Move model to device and ensure class weights are on correct device
+        model.to(device)
+        
         # Move class weights to device if they exist
-        # Handle DataParallel case where we need to access model.module.head
-        model_head = model.module.head if hasattr(model, 'module') else model.head
-        
-        if hasattr(model_head, 'task_weights') and model_head.task_weights:
-            for task_name, weights in model_head.task_weights.items():
+        if hasattr(model.head, 'task_weights') and model.head.task_weights:
+            for task_name, weights in model.head.task_weights.items():
                 if isinstance(weights, torch.Tensor):
-                    model_head.task_weights[task_name] = weights.to(device)
-        
-        # Calculate effective batch sizes for multi-GPU
-        effective_batch_size, per_gpu_batch_size = get_effective_batch_size(args, is_multi_gpu, gpu_info['num_gpus'])
-        
-        if is_multi_gpu:
-            logger.info(f"🚀 Multi-GPU Configuration:")
-            logger.info(f"   Strategy: {args.multi_gpu}")
-            logger.info(f"   GPUs: {gpu_info['num_gpus']}")
-            logger.info(f"   Requested batch size: {args.batch_size}")
-            logger.info(f"   Effective batch size: {effective_batch_size}")
-            logger.info(f"   Per-GPU batch size: {per_gpu_batch_size}")
-        else:
-            logger.info(f"🔧 Single-GPU Configuration:")
-            logger.info(f"   Device: {device}")
-            logger.info(f"   Batch size: {args.batch_size}")
+                    model.head.task_weights[task_name] = weights.to(device)
         
         # Create trainer
         trainer = MultiTaskTrainer(
@@ -1476,13 +1228,10 @@ def main():
         output_dir.mkdir(parents=True, exist_ok=True)
         
         # Save configuration
-        # Handle DataParallel case for model.config access
-        model_config = model.module.config if hasattr(model, 'module') else model.config
-        
         config = {
             'args': vars(args),
             'imbalance_analysis': imbalance_analysis,
-            'model_config': model_config,
+            'model_config': model.config,
             'unfreeze_schedule': unfreeze_schedule
         }
         
@@ -1504,8 +1253,7 @@ def main():
         # Log adaptive learning rate configuration
         if args.adaptive_lr:
             logger.info("🔧 Adaptive learning rate scaling enabled:")
-            logger.info(f"   Head LR: {args.head_lr:.2e}")
-            logger.info(f"   Backbone LR: {args.backbone_lr:.2e}")
+            logger.info(f"   Base LR: {args.lr:.2e}")
             logger.info(f"   Minor unfreezing scale: {args.lr_scale_minor}x")
             logger.info(f"   Major unfreezing scale: {args.lr_scale_major}x")
             logger.info(f"   Massive unfreezing scale: {args.lr_scale_massive}x")
@@ -1532,9 +1280,7 @@ def main():
                 logger.info(f"   {group_name}: {group['lr']:.2e}")
             
             # Apply gradual unfreezing if scheduled
-            # Handle DataParallel case for model.backbone access
-            model_for_unfreezing = model.module if hasattr(model, 'module') else model
-            apply_gradual_unfreezing(model_for_unfreezing, epoch, unfreeze_schedule, logger, trainer, args, optimizer)
+            apply_gradual_unfreezing(model, epoch, unfreeze_schedule, logger, trainer, args, optimizer)
             
             # Training
             model.train()
@@ -1590,9 +1336,7 @@ def main():
             
             # Log current backbone status
             if args.freeze_mode == 'gradual':
-                # Handle DataParallel case for model.backbone access
-                model_for_status = model.module if hasattr(model, 'module') else model
-                current_stage = model_for_status.backbone.get_current_unfreeze_stage()
+                current_stage = model.backbone.get_current_unfreeze_stage()
                 trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
                 total_params = sum(p.numel() for p in model.parameters())
                 trainable_pct = (trainable_params / total_params) * 100
@@ -1604,8 +1348,6 @@ def main():
             if current_metric > best_metric:
                 best_metric = current_metric
                 
-                # Handle DataParallel case for model.backbone access
-                model_for_checkpoint = model.module if hasattr(model, 'module') else model
                 checkpoint = {
                     'epoch': epoch + 1,
                     'model_state_dict': model.state_dict(),
@@ -1613,7 +1355,7 @@ def main():
                     'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
                     'best_metric': best_metric,
                     'config': config,
-                    'backbone_stage': model_for_checkpoint.backbone.get_current_unfreeze_stage()
+                    'backbone_stage': model.backbone.get_current_unfreeze_stage()
                 }
                 
                 # Save with unique filename including epoch and metric
@@ -1641,9 +1383,7 @@ def main():
             
             # Log backbone unfreezing progress
             if args.freeze_mode == 'gradual':
-                # Handle DataParallel case for model.backbone access
-                model_for_status = model.module if hasattr(model, 'module') else model
-                current_stage = model_for_status.backbone.get_current_unfreeze_stage()
+                current_stage = model.backbone.get_current_unfreeze_stage()
                 trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
                 writer.add_scalar('Backbone/Stage', current_stage, epoch)
                 writer.add_scalar('Backbone/TrainableParams', trainable_params, epoch)
@@ -1653,9 +1393,7 @@ def main():
         
         # Final backbone status
         if args.freeze_mode == 'gradual':
-            # Handle DataParallel case for model.backbone access
-            model_for_status = model.module if hasattr(model, 'module') else model
-            final_stage = model_for_status.backbone.get_current_unfreeze_stage()
+            final_stage = model.backbone.get_current_unfreeze_stage()
             final_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
             final_total = sum(p.numel() for p in model.parameters())
             logger.info(f"🏁 Final backbone status: stage {final_stage}, "

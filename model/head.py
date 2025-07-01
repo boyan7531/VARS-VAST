@@ -351,11 +351,7 @@ class MVFoulsHead(nn.Module):
             # Batch normalization - use GroupNorm for batch_size=1 compatibility
             if self.use_batch_norm:
                 # Use GroupNorm instead of BatchNorm to handle batch_size=1
-                # Ensure num_groups divides out_dim evenly
                 num_groups = min(32, max(1, out_dim // 16))
-                # Adjust num_groups to be a divisor of out_dim
-                while out_dim % num_groups != 0 and num_groups > 1:
-                    num_groups -= 1
                 shared_layers.append(nn.GroupNorm(num_groups, out_dim))
             
             # Activation
@@ -390,11 +386,7 @@ class MVFoulsHead(nn.Module):
                 if i < self.task_specific_layers - 1:
                     if self.use_batch_norm:
                         # Use GroupNorm instead of BatchNorm to handle batch_size=1
-                        # Ensure num_groups divides out_dim evenly
                         num_groups = min(32, max(1, out_dim // 16))
-                        # Adjust num_groups to be a divisor of out_dim
-                        while out_dim % num_groups != 0 and num_groups > 1:
-                            num_groups -= 1
                         task_layers.append(nn.GroupNorm(num_groups, out_dim))
                     task_layers.append(act_fn)
                     if self.dropout_p is not None and self.dropout_p > 0:
@@ -585,17 +577,6 @@ class MVFoulsHead(nn.Module):
         
         # Store features before shared layers
         extras['feat'] = x
-        
-        # Ensure tensor is 2D before shared layers
-        if x.dim() > 2:
-            # This shouldn't happen if clip pooling works correctly
-            # Find the correct way to reshape based on the actual tensor structure
-            if x.dim() == 4 and x.shape[2] == 1:  # (B, N_clips, 1, C)
-                x = x.squeeze(2)  # Remove the singleton dimension -> (B, N_clips, C)
-                x = x.mean(dim=1)  # Pool over clips -> (B, C)
-            else:
-                # Fallback: flatten extra dimensions
-                x = x.view(x.shape[0], -1)
         
         # Pass through shared layers (if any)
         if hasattr(self, 'shared_layers'):
