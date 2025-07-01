@@ -34,6 +34,43 @@ from typing import Dict, Any, Optional, Union, List
 from contextlib import nullcontext
 from collections import Counter
 
+
+class TaskHeadAction(argparse.Action):
+    """Custom argparse action to parse task head configurations."""
+    
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, 'task_head_cfg', None) is None:
+            namespace.task_head_cfg = {}
+        
+        if len(values) < 2:
+            raise argparse.ArgumentTypeError("--task-head requires at least 2 arguments: task_name head_type [key=value ...]")
+        
+        task_name = values[0]
+        head_type = values[1]
+        
+        # Parse optional key=value parameters
+        kwargs = {}
+        for arg in values[2:]:
+            if '=' not in arg:
+                raise argparse.ArgumentTypeError(f"Optional parameters must be in key=value format, got: {arg}")
+            key, value = arg.split('=', 1)
+            
+            # Try to parse as int, then float, then string
+            try:
+                kwargs[key] = int(value)
+            except ValueError:
+                try:
+                    kwargs[key] = float(value)
+                except ValueError:
+                    # Handle boolean values
+                    if value.lower() in ('true', 'false'):
+                        kwargs[key] = value.lower() == 'true'
+                    else:
+                        kwargs[key] = value
+        
+        # Store the configuration
+        namespace.task_head_cfg[task_name] = {'type': head_type, **kwargs}
+
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader, WeightedRandomSampler
@@ -412,6 +449,7 @@ def create_balanced_model(
     loss_types_per_task: Optional[Dict[str, str]] = None,
     use_effective_weights: bool = False,
     freeze_mode: str = 'gradual',
+    per_task_head_cfg: Optional[Dict[str, Dict]] = None,
     **model_kwargs
 ) -> MVFoulsModel:
     """
@@ -499,7 +537,8 @@ def create_balanced_model(
             task_loss_weights=primary_task_weights,
             backbone_checkpointing=backbone_checkpointing,
             clip_pooling_type=model_kwargs.get('clip_pooling_type', 'mean'),
-            clip_pooling_temperature=model_kwargs.get('clip_pooling_temperature', 1.0)
+            clip_pooling_temperature=model_kwargs.get('clip_pooling_temperature', 1.0),
+            per_task_head_cfg=per_task_head_cfg  # New: task-specific head configuration
         )
         
         # Add summary of what the model will predict
@@ -512,6 +551,29 @@ def create_balanced_model(
                 logger.info(f"      Classes: Missing, 1, 2, 3, 4, 5") 
             elif task_name == 'offence':
                 logger.info(f"      Classes: Missing/Empty, Offence, No offence, Between")
+        
+        # Log task-specific head configuration if provided
+        if per_task_head_cfg:
+            logger.info("🔧 TASK-SPECIFIC HEAD CONFIGURATION:")
+            for task_name, head_cfg in per_task_head_cfg.items():
+                head_type = head_cfg.get('type', 'linear')
+                if head_type == 'linear':
+                    logger.info(f"   📋 {task_name}: Linear head (standard)")
+                elif head_type == 'deep_mlp':
+                    depth = head_cfg.get('depth', 3)
+                    hidden = head_cfg.get('hidden', 1024)
+                    dropout = head_cfg.get('dropout', 0.3)
+                    logger.info(f"   🧠 {task_name}: DeepMLP head (depth={depth}, hidden={hidden}, dropout={dropout})")
+                elif head_type == 'se_mlp':
+                    depth = head_cfg.get('depth', 3)
+                    hidden = head_cfg.get('hidden', 1024)
+                    reduction = head_cfg.get('reduction', 4)
+                    dropout = head_cfg.get('dropout', 0.3)
+                    logger.info(f"   🎯 {task_name}: SE-MLP head (depth={depth}, hidden={hidden}, reduction={reduction}, dropout={dropout})")
+                else:
+                    logger.info(f"   ❓ {task_name}: {head_type} head (custom)")
+        else:
+            logger.info("📋 Using default linear heads for all tasks")
         
     else:
         # Single-task model with simple class weights
@@ -840,6 +902,12 @@ def main():
     parser.add_argument('--clip-pooling-temperature', type=float, default=1.0,
                         help='Temperature for attention pooling in bag-of-clips mode (default: 1.0)')
     
+    # Task-specific head configuration
+    parser.add_argument('--task-head', nargs='+', action=TaskHeadAction,
+                        help='Configure task-specific heads. Format: --task-head <task> <type> [key=value ...]. '
+                             'Types: linear, deep_mlp, se_mlp. '
+                             'Example: --task-head offence deep_mlp depth=3 hidden=1024 dropout=0.2')
+    
     args = parser.parse_args()
     
     # Parse and validate loss types configuration
@@ -1077,7 +1145,8 @@ def main():
             clip_pooling_type=args.clip_pooling_type,
             clip_pooling_temperature=args.clip_pooling_temperature,
             freeze_mode=args.freeze_mode,
-            backbone_arch=args.backbone_arch
+            backbone_arch=args.backbone_arch,
+            per_task_head_cfg=getattr(args, 'task_head_cfg', None)  # New: task-specific head configuration
         )
         
         # Log bag-of-clips configuration

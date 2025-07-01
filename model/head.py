@@ -5,6 +5,13 @@ import math
 from typing import Optional, Dict, Any, Tuple, List, Union
 import pandas as pd
 
+# Import task-specific heads
+try:
+    from .task_heads import build_task_head
+except ImportError:
+    # Fallback if task_heads not available
+    build_task_head = None
+
 # Import task metadata utilities
 try:
     from utils import (
@@ -199,6 +206,8 @@ class MVFoulsHead(nn.Module):
         task_specific_layers: int = 1,  # Number of task-specific layers
         use_batch_norm: bool = True,  # Use batch normalization
         activation: str = 'relu',  # Activation function
+        # Task-specific head configuration
+        per_task_head_cfg: Optional[Dict[str, Dict]] = None,
         # Bag-of-clips parameters
         clip_pooling_type: str = 'mean',  # 'mean', 'max', 'attention'
         clip_pooling_temperature: float = 1.0  # Temperature for attention pooling
@@ -218,6 +227,9 @@ class MVFoulsHead(nn.Module):
         self.freeze_mode = freeze_mode
         self.gradient_checkpointing = gradient_checkpointing
         self.enable_localizer = enable_localizer
+        
+        # Task-specific head configuration
+        self.per_task_head_cfg = per_task_head_cfg or {}
         
         # Bag-of-clips parameters
         self.clip_pooling_type = clip_pooling_type
@@ -372,37 +384,53 @@ class MVFoulsHead(nn.Module):
         # Task-specific heads
         self.task_heads = nn.ModuleDict()
         for task_name, num_cls in zip(self.task_names, self.num_classes_per_task):
-            task_layers = []
-            task_current_dim = self.hidden_dim
+            # Check if we have a custom head configuration for this task
+            cfg = self.per_task_head_cfg.get(task_name, {})
+            head_type = cfg.pop('type', 'linear')  # default = existing single FC
             
-            # Task-specific intermediate layers
-            for i in range(self.task_specific_layers):
-                if i == self.task_specific_layers - 1:
-                    # Last layer goes to task's number of classes
-                    out_dim = num_cls
-                else:
-                    # Intermediate task-specific layers
-                    out_dim = self.hidden_dim // 2
+            if head_type == 'linear' or build_task_head is None:
+                # Use existing logic for linear head or fallback if task_heads not available
+                task_layers = []
+                task_current_dim = self.hidden_dim
                 
-                task_layers.append(nn.Linear(task_current_dim, out_dim))
+                # Task-specific intermediate layers
+                for i in range(self.task_specific_layers):
+                    if i == self.task_specific_layers - 1:
+                        # Last layer goes to task's number of classes
+                        out_dim = num_cls
+                    else:
+                        # Intermediate task-specific layers
+                        out_dim = self.hidden_dim // 2
+                    
+                    task_layers.append(nn.Linear(task_current_dim, out_dim))
+                    
+                    # Only add activation/dropout for intermediate layers, not final layer
+                    if i < self.task_specific_layers - 1:
+                        if self.use_batch_norm:
+                            # Use GroupNorm instead of BatchNorm to handle batch_size=1
+                            # Ensure num_groups divides out_dim evenly
+                            num_groups = min(32, max(1, out_dim // 16))
+                            # Adjust num_groups to be a divisor of out_dim
+                            while out_dim % num_groups != 0 and num_groups > 1:
+                                num_groups -= 1
+                            task_layers.append(nn.GroupNorm(num_groups, out_dim))
+                        task_layers.append(act_fn)
+                        if self.dropout_p is not None and self.dropout_p > 0:
+                            task_layers.append(nn.Dropout(self.dropout_p))
+                    
+                    task_current_dim = out_dim
                 
-                # Only add activation/dropout for intermediate layers, not final layer
-                if i < self.task_specific_layers - 1:
-                    if self.use_batch_norm:
-                        # Use GroupNorm instead of BatchNorm to handle batch_size=1
-                        # Ensure num_groups divides out_dim evenly
-                        num_groups = min(32, max(1, out_dim // 16))
-                        # Adjust num_groups to be a divisor of out_dim
-                        while out_dim % num_groups != 0 and num_groups > 1:
-                            num_groups -= 1
-                        task_layers.append(nn.GroupNorm(num_groups, out_dim))
-                    task_layers.append(act_fn)
-                    if self.dropout_p is not None and self.dropout_p > 0:
-                        task_layers.append(nn.Dropout(self.dropout_p))
-                
-                task_current_dim = out_dim
-            
-            self.task_heads[task_name] = nn.Sequential(*task_layers)
+                self.task_heads[task_name] = nn.Sequential(*task_layers)
+            else:
+                # Use the new task head factory function
+                try:
+                    head = build_task_head(head_type, self.hidden_dim, num_cls, **cfg)
+                    self.task_heads[task_name] = head
+                except Exception as e:
+                    # Fallback to linear head if custom head creation fails
+                    print(f"Warning: Failed to create {head_type} head for task {task_name}: {e}")
+                    print(f"Falling back to linear head for task {task_name}")
+                    self.task_heads[task_name] = nn.Linear(self.hidden_dim, num_cls)
         
         # Keep single classifier for backward compatibility (will be deprecated)
         self.classifier = nn.Linear(self.hidden_dim, self.num_classes)
@@ -1136,11 +1164,14 @@ def build_head(**kwargs) -> MVFoulsHead:
     return MVFoulsHead(**kwargs)
 
 
-def build_multi_task_head(**kwargs) -> MVFoulsHead:
+def build_multi_task_head(per_task_head_cfg: Optional[Dict[str, Dict]] = None, **kwargs) -> MVFoulsHead:
     """
     Factory function to build multi-task MVFoulsHead with MVFouls task metadata.
     
     Args:
+        per_task_head_cfg: Optional dict mapping task names to head configurations.
+                          Format: {'task_name': {'type': 'deep_mlp', 'hidden': 1024, 'depth': 3}}
+                          Default type is 'linear' if not specified.
         **kwargs: Additional arguments to pass to MVFoulsHead constructor
         
     Returns:
@@ -1165,6 +1196,8 @@ def build_multi_task_head(**kwargs) -> MVFoulsHead:
         'use_batch_norm': True,  # Normalization for stability
         'activation': 'relu',  # Activation function
         'dropout': 0.3,  # Regularization
+        # Add per-task head configuration
+        'per_task_head_cfg': per_task_head_cfg,
     }
     
     # Override with user-provided kwargs

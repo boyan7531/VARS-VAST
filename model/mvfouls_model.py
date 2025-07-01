@@ -94,6 +94,9 @@ class MVFoulsModel(nn.Module):
         task_loss_weights: Optional[Dict[str, float]] = None,
         task_focal_gamma_map: Optional[Dict[str, float]] = None,
         
+        # Task-specific head configuration
+        per_task_head_cfg: Optional[Dict[str, Dict]] = None,
+        
         # Model configuration
         model_name: str = "MVFoulsModel",
         model_version: str = "1.0",
@@ -178,6 +181,7 @@ class MVFoulsModel(nn.Module):
         if multi_task and get_task_metadata is not None:
             # Multi-task mode with automatic task detection
             self.head = build_multi_task_head(
+                per_task_head_cfg=per_task_head_cfg,
                 in_dim=backbone_dim,
                 dropout=head_dropout,
                 pooling=head_pooling,
@@ -1018,6 +1022,7 @@ def build_multi_task_model(
     backbone_arch: str = 'swin',
     backbone_pretrained: bool = True,
     backbone_freeze_mode: str = 'none',
+    per_task_head_cfg: Optional[Dict[str, Dict]] = None,
     **kwargs
 ) -> MVFoulsModel:
     """
@@ -1027,6 +1032,7 @@ def build_multi_task_model(
         backbone_arch: Backbone architecture ('swin', 'mvit')
         backbone_pretrained: Use pretrained backbone
         backbone_freeze_mode: Backbone freeze mode ('none', 'freeze_all', etc.)
+        per_task_head_cfg: Optional task-specific head configurations
         **kwargs: Additional arguments
         
     Returns:
@@ -1040,6 +1046,7 @@ def build_multi_task_model(
         backbone_pretrained=backbone_pretrained,
         backbone_freeze_mode=backbone_freeze_mode,
         multi_task=True,
+        per_task_head_cfg=per_task_head_cfg,
         **kwargs
     )
 
