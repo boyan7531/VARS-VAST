@@ -540,6 +540,7 @@ def create_balanced_model(
     loss_types_per_task: Optional[Dict[str, str]] = None,
     use_effective_weights: bool = False,
     freeze_mode: str = 'gradual',
+    backbone_checkpoint_path: Optional[str] = None,
     **model_kwargs
 ) -> MVFoulsModel:
     """
@@ -622,6 +623,7 @@ def create_balanced_model(
             backbone_arch=backbone_arch,
             backbone_pretrained=True,
             backbone_freeze_mode=freeze_mode,
+            backbone_checkpoint_path=backbone_checkpoint_path,
             loss_types_per_task=loss_types_list,  # Pass the list format expected by model
             class_weights=task_weights,
             task_loss_weights=primary_task_weights,
@@ -671,6 +673,7 @@ def create_balanced_model(
             backbone_arch=backbone_arch,
             backbone_pretrained=True,
             backbone_freeze_mode=freeze_mode,
+            backbone_checkpoint_path=backbone_checkpoint_path,
             head_loss_type='ce',  # Always use CrossEntropy
             class_weights=class_weights,
             backbone_checkpointing=backbone_checkpointing,
@@ -851,6 +854,10 @@ def main():
                         choices=['swin', 'mvit', 'mvitv2_b', 'mvitv2', 'mvitv2_base', 'mvit_v1_b',
                                  'k600', 'kinetics600', 'k400', 'kinetics400', 'pyslowfast', 'true-mvitv2b'],
                         help='Backbone architecture (swin, mvit, timm MViT variants, k600 for Kinetics-600, k400 for Kinetics-400, pyslowfast for PySlowFast optimized MViTv2-B, or true-mvitv2b for exact 52M param implementation)')
+    
+    # Backbone checkpoint path
+    parser.add_argument('--backbone-checkpoint', type=str, default=None,
+                        help='Path to a local checkpoint (.pyth or .pth) to load into the backbone')
     
     # Balance-specific arguments (Option A: WeightedRandomSampler + CrossEntropy)
     parser.add_argument('--analyze-only', action='store_true', help='Only analyze imbalance, dont train')
@@ -1265,7 +1272,8 @@ def main():
             clip_pooling_type=args.clip_pooling_type,
             clip_pooling_temperature=args.clip_pooling_temperature,
             freeze_mode=args.freeze_mode,
-            backbone_arch=args.backbone_arch
+            backbone_arch=args.backbone_arch,
+            backbone_checkpoint_path=args.backbone_checkpoint
         )
         
         # Log bag-of-clips configuration

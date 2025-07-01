@@ -66,6 +66,7 @@ class MVFoulsModel(nn.Module):
         backbone_pretrained: bool = True,
         backbone_freeze_mode: str = 'none',
         backbone_checkpointing: bool = False,
+        backbone_checkpoint_path: Optional[str] = None,
         
         # Head configuration
         num_classes: int = 2,
@@ -101,6 +102,7 @@ class MVFoulsModel(nn.Module):
             backbone_pretrained: Whether to use pretrained backbone weights
             backbone_freeze_mode: Backbone freeze strategy ('none', 'freeze_all', 'freeze_stages{k}', 'gradual')
             backbone_checkpointing: Enable gradient checkpointing in backbone
+            backbone_checkpoint_path: Path to checkpoint file for backbone
             
             num_classes: Number of classes for single-task mode
             head_dropout: Dropout probability in head
@@ -131,6 +133,7 @@ class MVFoulsModel(nn.Module):
             'backbone_pretrained': backbone_pretrained,
             'backbone_freeze_mode': backbone_freeze_mode,
             'backbone_checkpointing': backbone_checkpointing,
+            'backbone_checkpoint_path': backbone_checkpoint_path,
             'num_classes': num_classes,
             'head_dropout': head_dropout,
             'head_pooling': head_pooling,
@@ -161,7 +164,8 @@ class MVFoulsModel(nn.Module):
             pretrained=backbone_pretrained,
             return_pooled=head_pooling is None,  # If head has no pooling, backbone should return pooled features
             freeze_mode=backbone_freeze_mode,
-            checkpointing=backbone_checkpointing
+            checkpointing=backbone_checkpointing,
+            checkpoint_path=backbone_checkpoint_path,
         )
         
         # Get backbone output dimension
@@ -958,6 +962,7 @@ def build_single_task_model(
     backbone_arch: str = 'swin',
     backbone_pretrained: bool = True,
     backbone_freeze_mode: str = 'none',
+    backbone_checkpoint_path: Optional[str] = None,
     **kwargs
 ) -> MVFoulsModel:
     """
@@ -968,6 +973,7 @@ def build_single_task_model(
         backbone_arch: Backbone architecture ('swin', 'mvit')
         backbone_pretrained: Use pretrained backbone
         backbone_freeze_mode: Backbone freeze mode ('none', 'freeze_all', etc.)
+        backbone_checkpoint_path: Path to checkpoint file for backbone
         **kwargs: Additional arguments
         
     Returns:
@@ -977,6 +983,7 @@ def build_single_task_model(
         backbone_arch=backbone_arch,
         backbone_pretrained=backbone_pretrained,
         backbone_freeze_mode=backbone_freeze_mode,
+        backbone_checkpoint_path=backbone_checkpoint_path,
         num_classes=num_classes,
         multi_task=False,
         **kwargs
@@ -987,6 +994,7 @@ def build_multi_task_model(
     backbone_arch: str = 'swin',
     backbone_pretrained: bool = True,
     backbone_freeze_mode: str = 'none',
+    backbone_checkpoint_path: Optional[str] = None,
     **kwargs
 ) -> MVFoulsModel:
     """
@@ -996,6 +1004,7 @@ def build_multi_task_model(
         backbone_arch: Backbone architecture ('swin', 'mvit')
         backbone_pretrained: Use pretrained backbone
         backbone_freeze_mode: Backbone freeze mode ('none', 'freeze_all', etc.)
+        backbone_checkpoint_path: Path to checkpoint file for backbone
         **kwargs: Additional arguments
         
     Returns:
@@ -1008,6 +1017,7 @@ def build_multi_task_model(
         backbone_arch=backbone_arch,
         backbone_pretrained=backbone_pretrained,
         backbone_freeze_mode=backbone_freeze_mode,
+        backbone_checkpoint_path=backbone_checkpoint_path,
         multi_task=True,
         **kwargs
     )
