@@ -1,28 +1,27 @@
-# Local virtual-environment
 .venv/
 
-# Python cache / artifacts
+mvfouls/
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
 *.pyd
+*.pyw
 *.pyz
-*.pyz.*
-*.pkl
-*.pt*
-*.pth*
-*.ptl*
+*.pywz
+*.pyzw
+*.pyzwz
+*.pyzwzw
 
-# Generated outputs and checkpoints
-outputs/
-checkpoints/
-*.ckpt
-
-# Project-specific data
-mvfouls/
-
-# Tests
 tests/
 
-*.md
-outputs/
+*.pt
+*.pth
+*.pkl
+*.ptl
+*.pthl
+*.pkl
+*.ptl
+*.pthl
+*.pkl
+
+outputs/.

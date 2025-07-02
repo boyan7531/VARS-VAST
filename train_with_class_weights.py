@@ -34,6 +34,43 @@ from typing import Dict, Any, Optional, Union, List
 from contextlib import nullcontext
 from collections import Counter
 
+
+class TaskHeadAction(argparse.Action):
+    """Custom argparse action to parse task head configurations."""
+    
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, 'task_head_cfg', None) is None:
+            namespace.task_head_cfg = {}
+        
+        if len(values) < 2:
+            raise argparse.ArgumentTypeError("--task-head requires at least 2 arguments: task_name head_type [key=value ...]")
+        
+        task_name = values[0]
+        head_type = values[1]
+        
+        # Parse optional key=value parameters
+        kwargs = {}
+        for arg in values[2:]:
+            if '=' not in arg:
+                raise argparse.ArgumentTypeError(f"Optional parameters must be in key=value format, got: {arg}")
+            key, value = arg.split('=', 1)
+            
+            # Try to parse as int, then float, then string
+            try:
+                kwargs[key] = int(value)
+            except ValueError:
+                try:
+                    kwargs[key] = float(value)
+                except ValueError:
+                    # Handle boolean values
+                    if value.lower() in ('true', 'false'):
+                        kwargs[key] = value.lower() == 'true'
+                    else:
+                        kwargs[key] = value
+        
+        # Store the configuration
+        namespace.task_head_cfg[task_name] = {'type': head_type, **kwargs}
+
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader, WeightedRandomSampler
@@ -412,6 +449,9 @@ def create_balanced_model(
     loss_types_per_task: Optional[Dict[str, str]] = None,
     use_effective_weights: bool = False,
     freeze_mode: str = 'gradual',
+    per_task_head_cfg: Optional[Dict[str, Dict]] = None,
+    ldam_max_m: float = 0.5,
+    ldam_s: float = 30.0,
     **model_kwargs
 ) -> MVFoulsModel:
     """
@@ -438,6 +478,7 @@ def create_balanced_model(
         # Prepare task-specific configurations with flexible loss types
         task_weights = {}
         loss_types_list = []
+        task_class_counts = {}  # For LDAM loss
         
         # Default loss configuration if not provided
         if loss_types_per_task is None:
@@ -447,10 +488,20 @@ def create_balanced_model(
                 'offence': 'ce'
             }
         
+        # Check if any task uses LDAM loss
+        using_ldam = any(loss_type == 'ldam' for loss_type in loss_types_per_task.values())
+        
         for task_name in task_names:
             # Get loss type for this task
             loss_type = loss_types_per_task.get(task_name, 'ce')
             loss_types_list.append(loss_type)
+            
+            # Collect class counts for LDAM loss if needed
+            if using_ldam and imbalance_analysis and task_name in imbalance_analysis:
+                analysis = imbalance_analysis[task_name]
+                class_counts = analysis['class_counts']
+                task_class_counts[task_name] = class_counts
+                logger.info(f"📊 {task_name}: Collected class counts for LDAM: {class_counts}")
             
             # Optional: Add class weights (method depends on use_effective_weights flag)
             if use_class_weights and imbalance_analysis and task_name in imbalance_analysis:
@@ -499,7 +550,12 @@ def create_balanced_model(
             task_loss_weights=primary_task_weights,
             backbone_checkpointing=backbone_checkpointing,
             clip_pooling_type=model_kwargs.get('clip_pooling_type', 'mean'),
-            clip_pooling_temperature=model_kwargs.get('clip_pooling_temperature', 1.0)
+            clip_pooling_temperature=model_kwargs.get('clip_pooling_temperature', 1.0),
+            per_task_head_cfg=per_task_head_cfg,  # New: task-specific head configuration
+            # LDAM loss parameters
+            task_class_counts=task_class_counts if task_class_counts else None,
+            ldam_max_m=ldam_max_m,
+            ldam_s=ldam_s
         )
         
         # Add summary of what the model will predict
@@ -512,6 +568,29 @@ def create_balanced_model(
                 logger.info(f"      Classes: Missing, 1, 2, 3, 4, 5") 
             elif task_name == 'offence':
                 logger.info(f"      Classes: Missing/Empty, Offence, No offence, Between")
+        
+        # Log task-specific head configuration if provided
+        if per_task_head_cfg:
+            logger.info("🔧 TASK-SPECIFIC HEAD CONFIGURATION:")
+            for task_name, head_cfg in per_task_head_cfg.items():
+                head_type = head_cfg.get('type', 'linear')
+                if head_type == 'linear':
+                    logger.info(f"   📋 {task_name}: Linear head (standard)")
+                elif head_type == 'deep_mlp':
+                    depth = head_cfg.get('depth', 3)
+                    hidden = head_cfg.get('hidden', 1024)
+                    dropout = head_cfg.get('dropout', 0.3)
+                    logger.info(f"   🧠 {task_name}: DeepMLP head (depth={depth}, hidden={hidden}, dropout={dropout})")
+                elif head_type == 'se_mlp':
+                    depth = head_cfg.get('depth', 3)
+                    hidden = head_cfg.get('hidden', 1024)
+                    reduction = head_cfg.get('reduction', 4)
+                    dropout = head_cfg.get('dropout', 0.3)
+                    logger.info(f"   🎯 {task_name}: SE-MLP head (depth={depth}, hidden={hidden}, reduction={reduction}, dropout={dropout})")
+                else:
+                    logger.info(f"   ❓ {task_name}: {head_type} head (custom)")
+        else:
+            logger.info("📋 Using default linear heads for all tasks")
         
     else:
         # Single-task model with simple class weights
@@ -536,7 +615,7 @@ def create_balanced_model(
         
         # Filter out conflicting kwargs
         filtered_kwargs = {k: v for k, v in model_kwargs.items() 
-                          if k not in ['head_loss_type', 'head_label_smoothing']}
+                          if k not in ['head_loss_type', 'head_label_smoothing', 'clip_pooling_type', 'clip_pooling_temperature']}
         
         model = build_single_task_model(
             num_classes=2,
@@ -727,18 +806,22 @@ def main():
     parser.add_argument('--epochs', type=int, default=20, help='Number of epochs')
     parser.add_argument('--batch-size', type=int, default=8, help='Batch size')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
+    parser.add_argument('--head-lr', type=float, default=None, help='Head learning rate (if different from backbone lr)')
     parser.add_argument('--weight-decay', type=float, default=1e-4, help='Weight decay')
     parser.add_argument('--freeze-mode', type=str, default='gradual', help='Backbone freeze mode')
     
     # Backbone architecture
     parser.add_argument('--backbone-arch', type=str, default='swin',
-                        choices=['swin', 'mvit', 'mvitv2_b', 'mvitv2', 'mvitv2_base', 'mvit_v1_b'],
-                        help='Backbone architecture (swin, mvit, or timm MViT variants)')
+                        choices=['swin', 'mvit', 'mvitv2_b', 'mvitv2', 'mvitv2_base', 'mvit_v1_b',
+                                 'k600', 'kinetics600', 'k400', 'kinetics400', 'pyslowfast', 'true-mvitv2b'],
+                        help='Backbone architecture (swin, mvit, timm MViT variants, k600 for Kinetics-600, k400 for Kinetics-400, pyslowfast for PySlowFast optimized MViTv2-B, or true-mvitv2b for exact 52M param implementation)')
     
     # Balance-specific arguments (Option A: WeightedRandomSampler + CrossEntropy)
     parser.add_argument('--analyze-only', action='store_true', help='Only analyze imbalance, dont train')
     parser.add_argument('--disable-class-weights', action='store_true', 
                        help='Disable simple inverse frequency class weights')
+    parser.add_argument('--enable-class-weights', action='store_true',
+                       help='Force enable class weights even when balanced sampling is used (not recommended)')
     parser.add_argument('--class-weight-cap', type=float, default=10.0,
                        help='Maximum class weight multiplier to prevent extreme weights (default: 10.0)')
     
@@ -782,8 +865,8 @@ def main():
     # Add balanced sampling arguments
     parser.add_argument('--balanced-sampling', action='store_true',
                        help='Use balanced sampling to ensure equal class representation')
-    parser.add_argument('--balance-tasks', nargs='+', default=['action_class'],
-                       help='Task(s) to balance sampling for - choose from: action_class, severity, offence (default: action_class)')
+    parser.add_argument('--balance-tasks', nargs='+', default=['action_class', 'severity', 'offence'],
+                       help='Task(s) to balance sampling for - choose from: action_class, severity, offence (default: all tasks)')
     parser.add_argument('--balance-task', type=str, default=None,
                        help='Single task to balance sampling for (deprecated, use --balance-tasks)')
     parser.add_argument('--joint-severity-sampling', action='store_true',
@@ -799,10 +882,20 @@ def main():
     parser.add_argument('--context-task-weight', type=float, default=0.5,
                         help='Weight for unexpected tasks (should not be used) (default: 0.5)')
     
+    # Add per-class threshold optimization flag
+    parser.add_argument('--save-val-logits', action='store_true',
+                        help='Save validation logits for per-class threshold optimization')
+    
     # Loss configuration arguments
     parser.add_argument('--loss-types', nargs='+',
                         help='Per-task loss types in canonical task order '
                              '(format: task_name loss_type pairs). Example: --loss-types action_class ce severity focal offence ce')
+    
+    # LDAM loss arguments
+    parser.add_argument('--ldam-max-m', type=float, default=0.5,
+                        help='Maximum margin for LDAM loss (default: 0.5)')
+    parser.add_argument('--ldam-s', type=float, default=30.0,
+                        help='Scale parameter for LDAM loss (default: 30.0)')
     
     # Advanced task weighting arguments
     parser.add_argument('--weighting-strategy', type=str, default='inverse_accuracy',
@@ -835,6 +928,12 @@ def main():
     parser.add_argument('--clip-pooling-temperature', type=float, default=1.0,
                         help='Temperature for attention pooling in bag-of-clips mode (default: 1.0)')
     
+    # Task-specific head configuration
+    parser.add_argument('--task-head', nargs='+', action=TaskHeadAction,
+                        help='Configure task-specific heads. Format: --task-head <task> <type> [key=value ...]. '
+                             'Types: linear, deep_mlp, se_mlp. '
+                             'Example: --task-head offence deep_mlp depth=3 hidden=1024 dropout=0.2')
+    
     args = parser.parse_args()
     
     # Parse and validate loss types configuration
@@ -844,7 +943,7 @@ def main():
         if len(args.loss_types) % 2 != 0:
             raise ValueError("--loss-types must have even number of arguments (task_name loss_type pairs)")
         
-        valid_loss_types = ['ce', 'focal', 'bce']
+        valid_loss_types = ['ce', 'focal', 'bce', 'ldam']
         for i in range(0, len(args.loss_types), 2):
             task_name = args.loss_types[i]
             loss_type = args.loss_types[i + 1]
@@ -945,7 +1044,10 @@ def main():
             bag_of_clips=args.bag_of_clips,
             max_clips_per_action=args.max_clips_per_action,
             min_clips_per_action=args.min_clips_per_action,
-            clip_sampling_strategy=args.clip_sampling_strategy
+            clip_sampling_strategy=args.clip_sampling_strategy,
+            random_start_augmentation=True,  # Enable random start frames for training
+            min_start_frame=45,
+            max_start_frame=74
         )
         
         # Apply fractional subset for smoke tests
@@ -1057,19 +1159,32 @@ def main():
                 elif task_name == 'offence':
                     logger.info(f"      Classes: Missing/Empty, Offence, No offence, Between")
         
+        # Determine class weights usage: auto-disable when balanced sampling is used
+        if args.balanced_sampling and not args.enable_class_weights and not args.disable_class_weights:
+            # Auto-disable class weights when balanced sampling is used
+            use_class_weights = False
+            logger.info("🔧 Auto-disabling class weights since balanced sampling is enabled")
+            logger.info("   Use --enable-class-weights to force enable both (not recommended)")
+        else:
+            use_class_weights = not args.disable_class_weights
+        
         model = create_balanced_model(
             multi_task=args.multi_task,
             imbalance_analysis=imbalance_analysis,
             primary_task_weights=primary_task_weights,
             backbone_checkpointing=True,  # Enable gradient checkpointing
-            use_class_weights=not args.disable_class_weights,  # Use simple inverse frequency class weights
+            use_class_weights=use_class_weights,  # Use simple inverse frequency class weights
             class_weight_cap=args.class_weight_cap,
             loss_types_per_task=loss_types_per_task,  # New: per-task loss configuration
             use_effective_weights=args.effective_class_weights,  # New: effective number class weights
             clip_pooling_type=args.clip_pooling_type,
             clip_pooling_temperature=args.clip_pooling_temperature,
             freeze_mode=args.freeze_mode,
-            backbone_arch=args.backbone_arch
+            backbone_arch=args.backbone_arch,
+            per_task_head_cfg=getattr(args, 'task_head_cfg', None),  # New: task-specific head configuration
+            # LDAM parameters
+            ldam_max_m=args.ldam_max_m,
+            ldam_s=args.ldam_s
         )
         
         # Log bag-of-clips configuration
@@ -1109,11 +1224,11 @@ def main():
         shuffle = True
         
         if args.balanced_sampling:
-            # Check for potential double-correction
-            if not args.disable_class_weights:
-                logger.warning("⚠️  Both balanced sampling and class weights are enabled!")
+            # Check for potential double-correction (only warn if explicitly enabled)
+            if args.enable_class_weights:
+                logger.warning("⚠️  Both balanced sampling and class weights are explicitly enabled!")
                 logger.warning("   This may cause over-correction of class imbalance.")
-                logger.warning("   Consider using --disable-class-weights with balanced sampling.")
+                logger.warning("   Consider removing --enable-class-weights.")
             
             # Handle convenience flag for joint severity sampling
             if args.joint_severity_sampling:
@@ -1166,10 +1281,18 @@ def main():
         backbone_params = list(model.backbone.parameters())
         head_params = list(model.head.parameters())
         
+        # Use separate learning rate for head if specified
+        head_lr = args.head_lr if args.head_lr is not None else args.lr
+        
+        if args.head_lr is not None:
+            logger.info(f"🎯 Using different learning rates: Head LR={head_lr:.2e}, Backbone LR={args.lr:.2e}")
+        else:
+            logger.info(f"📏 Using same learning rate for head and backbone: {args.lr:.2e}")
+        
         param_groups = [
             {
                 'params': head_params,
-                'lr': args.lr,
+                'lr': head_lr,
                 'weight_decay': args.weight_decay,
                 'name': 'head'
             },
@@ -1318,6 +1441,19 @@ def main():
                 format_metrics_table=format_metrics_table
             )
             
+            # Save validation logits if requested
+            if args.save_val_logits:
+                val_logits_path = output_dir / f'val_logits_epoch_{epoch+1:02d}.pt'
+                logits_data = {
+                    'epoch': epoch + 1,
+                    'logits': val_results.get('all_logits', []),
+                    'targets': val_results.get('all_targets', []),
+                    'model_config': model.config,
+                    'task_names': getattr(model.head, 'task_names', ['default'])
+                }
+                torch.save(logits_data, val_logits_path)
+                logger.info(f"💾 Saved validation logits: {val_logits_path.name}")
+            
             # Log metrics
             avg_train_loss = sum(m['total_loss'] for m in train_metrics) / len(train_metrics)
             val_loss = val_results['avg_loss']
@@ -1386,6 +1522,45 @@ def main():
         
         writer.close()
         logger.info("🎉 Training completed successfully!")
+        
+        # Compute thresholds if validation logits were saved
+        if args.save_val_logits:
+            logger.info("🎯 Computing optimal decision thresholds...")
+            
+            # Find the latest validation logits file
+            val_logits_files = sorted(output_dir.glob('val_logits_epoch_*.pt'))
+            if val_logits_files:
+                latest_logits_file = val_logits_files[-1]
+                thresholds_output = output_dir / 'thresholds.json'
+                
+                # Compute thresholds using the script
+                import subprocess
+                import sys
+                
+                cmd = [
+                    sys.executable, 'scripts/compute_thresholds.py',
+                    '--logits-file', str(latest_logits_file),
+                    '--output', str(thresholds_output),
+                    '--metric', 'youden',  # Default metric
+                    '--task', 'all'
+                ]
+                
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, cwd=Path(__file__).parent)
+                    if result.returncode == 0:
+                        logger.info(f"✅ Thresholds computed successfully: {thresholds_output.name}")
+                        logger.info("📋 Threshold computation output:")
+                        for line in result.stdout.strip().split('\n'):
+                            if line.strip():
+                                logger.info(f"   {line}")
+                    else:
+                        logger.error("❌ Threshold computation failed!")
+                        logger.error(f"   stdout: {result.stdout}")
+                        logger.error(f"   stderr: {result.stderr}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to run threshold computation: {e}")
+            else:
+                logger.warning("⚠️ No validation logits files found for threshold computation")
         
         # Final backbone status
         if args.freeze_mode == 'gradual':
