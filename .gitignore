@@ -1,5 +1,4 @@
 .venv/
-
 mvfouls/
 __pycache__/
 *.pyc
@@ -13,6 +12,7 @@ __pycache__/
 *.pyzwzw
 
 tests/
+.venv/
 
 *.pt
 *.pth
@@ -23,5 +23,16 @@ tests/
 *.ptl
 *.pthl
 *.pkl
+outputs
 
-outputs/.
+outputs/
+checkpoints/
+*.log
+*.log.*
+*.log.*.*
+*.log.*.*.*
+*.log.*.*.*.*
+*.log.*.*.*.*.*
+*.log.*.*.*.*.*.*
+*.log.*.*.*.*.*.*.*
+*.log.*.*.*.*.*.*.*.*
