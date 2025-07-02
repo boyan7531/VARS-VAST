@@ -806,6 +806,7 @@ def main():
     parser.add_argument('--epochs', type=int, default=20, help='Number of epochs')
     parser.add_argument('--batch-size', type=int, default=8, help='Batch size')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
+    parser.add_argument('--head-lr', type=float, default=None, help='Head learning rate (if different from backbone lr)')
     parser.add_argument('--weight-decay', type=float, default=1e-4, help='Weight decay')
     parser.add_argument('--freeze-mode', type=str, default='gradual', help='Backbone freeze mode')
     
@@ -819,6 +820,8 @@ def main():
     parser.add_argument('--analyze-only', action='store_true', help='Only analyze imbalance, dont train')
     parser.add_argument('--disable-class-weights', action='store_true', 
                        help='Disable simple inverse frequency class weights')
+    parser.add_argument('--enable-class-weights', action='store_true',
+                       help='Force enable class weights even when balanced sampling is used (not recommended)')
     parser.add_argument('--class-weight-cap', type=float, default=10.0,
                        help='Maximum class weight multiplier to prevent extreme weights (default: 10.0)')
     
@@ -862,8 +865,8 @@ def main():
     # Add balanced sampling arguments
     parser.add_argument('--balanced-sampling', action='store_true',
                        help='Use balanced sampling to ensure equal class representation')
-    parser.add_argument('--balance-tasks', nargs='+', default=['action_class'],
-                       help='Task(s) to balance sampling for - choose from: action_class, severity, offence (default: action_class)')
+    parser.add_argument('--balance-tasks', nargs='+', default=['action_class', 'severity', 'offence'],
+                       help='Task(s) to balance sampling for - choose from: action_class, severity, offence (default: all tasks)')
     parser.add_argument('--balance-task', type=str, default=None,
                        help='Single task to balance sampling for (deprecated, use --balance-tasks)')
     parser.add_argument('--joint-severity-sampling', action='store_true',
@@ -1156,12 +1159,21 @@ def main():
                 elif task_name == 'offence':
                     logger.info(f"      Classes: Missing/Empty, Offence, No offence, Between")
         
+        # Determine class weights usage: auto-disable when balanced sampling is used
+        if args.balanced_sampling and not args.enable_class_weights and not args.disable_class_weights:
+            # Auto-disable class weights when balanced sampling is used
+            use_class_weights = False
+            logger.info("🔧 Auto-disabling class weights since balanced sampling is enabled")
+            logger.info("   Use --enable-class-weights to force enable both (not recommended)")
+        else:
+            use_class_weights = not args.disable_class_weights
+        
         model = create_balanced_model(
             multi_task=args.multi_task,
             imbalance_analysis=imbalance_analysis,
             primary_task_weights=primary_task_weights,
             backbone_checkpointing=True,  # Enable gradient checkpointing
-            use_class_weights=not args.disable_class_weights,  # Use simple inverse frequency class weights
+            use_class_weights=use_class_weights,  # Use simple inverse frequency class weights
             class_weight_cap=args.class_weight_cap,
             loss_types_per_task=loss_types_per_task,  # New: per-task loss configuration
             use_effective_weights=args.effective_class_weights,  # New: effective number class weights
@@ -1212,11 +1224,11 @@ def main():
         shuffle = True
         
         if args.balanced_sampling:
-            # Check for potential double-correction
-            if not args.disable_class_weights:
-                logger.warning("⚠️  Both balanced sampling and class weights are enabled!")
+            # Check for potential double-correction (only warn if explicitly enabled)
+            if args.enable_class_weights:
+                logger.warning("⚠️  Both balanced sampling and class weights are explicitly enabled!")
                 logger.warning("   This may cause over-correction of class imbalance.")
-                logger.warning("   Consider using --disable-class-weights with balanced sampling.")
+                logger.warning("   Consider removing --enable-class-weights.")
             
             # Handle convenience flag for joint severity sampling
             if args.joint_severity_sampling:
@@ -1269,10 +1281,18 @@ def main():
         backbone_params = list(model.backbone.parameters())
         head_params = list(model.head.parameters())
         
+        # Use separate learning rate for head if specified
+        head_lr = args.head_lr if args.head_lr is not None else args.lr
+        
+        if args.head_lr is not None:
+            logger.info(f"🎯 Using different learning rates: Head LR={head_lr:.2e}, Backbone LR={args.lr:.2e}")
+        else:
+            logger.info(f"📏 Using same learning rate for head and backbone: {args.lr:.2e}")
+        
         param_groups = [
             {
                 'params': head_params,
-                'lr': args.lr,
+                'lr': head_lr,
                 'weight_decay': args.weight_decay,
                 'name': 'head'
             },
