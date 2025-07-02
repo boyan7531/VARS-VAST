@@ -406,7 +406,7 @@ def create_balanced_model(
     imbalance_analysis: Optional[Dict] = None,
     primary_task_weights: Optional[Dict[str, float]] = None,
     backbone_arch: str = 'swin',
-    backbone_checkpointing: bool = True,
+    backbone_checkpointing: bool = False,
     use_class_weights: bool = True,
     class_weight_cap: float = 10.0,
     loss_types_per_task: Optional[Dict[str, str]] = None,
@@ -1061,7 +1061,7 @@ def main():
             multi_task=args.multi_task,
             imbalance_analysis=imbalance_analysis,
             primary_task_weights=primary_task_weights,
-            backbone_checkpointing=True,  # Enable gradient checkpointing
+            backbone_checkpointing=False,  # Disable gradient checkpointing due to TIMM 1.0.16 compatibility issues
             use_class_weights=not args.disable_class_weights,  # Use simple inverse frequency class weights
             class_weight_cap=args.class_weight_cap,
             loss_types_per_task=loss_types_per_task,  # New: per-task loss configuration

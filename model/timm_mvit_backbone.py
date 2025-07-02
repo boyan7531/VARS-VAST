@@ -53,8 +53,20 @@ class VideoTimmMViTBackbone(nn.Module):
         self.set_freeze(freeze_mode)
 
         # Configure timm's internal gradient checkpointing based on flag
-        if hasattr(self.model, "set_grad_checkpointing"):
-            self.model.set_grad_checkpointing(checkpointing)
+        # Disable by default due to TIMM 1.0.16 compatibility issues
+        if checkpointing and hasattr(self.model, "set_grad_checkpointing"):
+            try:
+                self.model.set_grad_checkpointing(True)
+                print("Gradient checkpointing enabled successfully")
+            except Exception as e:
+                print(f"Warning: Could not enable gradient checkpointing: {e}")
+                print("Continuing without gradient checkpointing...")
+        else:
+            if hasattr(self.model, "set_grad_checkpointing"):
+                try:
+                    self.model.set_grad_checkpointing(False)
+                except Exception:
+                    pass  # Ignore errors when disabling
 
         self.out_dim = self.model.num_features
         
@@ -74,8 +86,8 @@ class VideoTimmMViTBackbone(nn.Module):
         """
         Robust fix for timm's checkpoint import issue.
         
-        timm expects 'from torch.utils import checkpoint' to give a module
-        with checkpoint.checkpoint function, but sometimes gets the function directly.
+        TIMM 1.0.16 has compatibility issues with gradient checkpointing.
+        This method attempts to fix the import issues.
         """
         import torch.utils as torch_utils
         
@@ -87,17 +99,40 @@ class VideoTimmMViTBackbone(nn.Module):
         except Exception:
             pass
             
-        # Additional monkey-patch: if timm still has issues, create a mock
+        # Additional monkey-patch for TIMM 1.0.16 compatibility
         try:
             import timm.models.mvitv2 as mvitv2_module
+            
+            # Check if checkpoint is imported incorrectly
             if hasattr(mvitv2_module, 'checkpoint'):
-                # If checkpoint is a function, wrap it in a module-like object
-                if callable(mvitv2_module.checkpoint) and not hasattr(mvitv2_module.checkpoint, 'checkpoint'):
-                    class CheckpointWrapper:
+                checkpoint_attr = mvitv2_module.checkpoint
+                
+                # If checkpoint is a function but doesn't have a checkpoint attribute, fix it
+                if callable(checkpoint_attr) and not hasattr(checkpoint_attr, 'checkpoint'):
+                    # Create a proper module-like wrapper
+                    class CheckpointModule:
                         def __init__(self, checkpoint_fn):
                             self.checkpoint = checkpoint_fn
-                    mvitv2_module.checkpoint = CheckpointWrapper(mvitv2_module.checkpoint)
-        except Exception:
+                        
+                        def __call__(self, *args, **kwargs):
+                            return self.checkpoint(*args, **kwargs)
+                    
+                    mvitv2_module.checkpoint = CheckpointModule(checkpoint_attr)
+                
+                # Alternative: if it's a CheckpointWrapper, make it callable
+                elif hasattr(checkpoint_attr, '__class__') and 'CheckpointWrapper' in str(checkpoint_attr.__class__):
+                    if not callable(checkpoint_attr):
+                        # Make the wrapper callable by adding __call__ method
+                        def make_callable(wrapper):
+                            def __call__(self, *args, **kwargs):
+                                return self.checkpoint(*args, **kwargs)
+                            wrapper.__call__ = __call__.__get__(wrapper, wrapper.__class__)
+                            return wrapper
+                        mvitv2_module.checkpoint = make_callable(checkpoint_attr)
+                        
+        except Exception as e:
+            # If all else fails, disable gradient checkpointing in the model
+            print(f"Warning: Could not fix checkpoint import, will disable gradient checkpointing: {e}")
             pass
 
     # ------------------------------------------------------------------
