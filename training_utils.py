@@ -409,7 +409,7 @@ class MultiTaskTrainer:
             combined_targets = {}
             
             for batch_logits, batch_targets in zip(all_logits, all_targets):
-                for task_name in batch_logits.keys():
+                for task_idx, task_name in enumerate(batch_logits.keys()):
                     if task_name not in combined_logits:
                         combined_logits[task_name] = []
                         combined_targets[task_name] = []
