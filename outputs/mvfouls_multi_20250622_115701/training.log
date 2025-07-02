@@ -1,0 +1,6 @@
+2025-06-22 11:57:01,180 - __main__ - INFO - Starting training experiment: mvfouls_multi_20250622_115701
+2025-06-22 11:57:01,182 - __main__ - INFO - Device: cpu
+2025-06-22 11:57:01,182 - __main__ - INFO - Arguments: {'train_dir': '/mvfouls', 'val_dir': '/mvfouls', 'test_dir': None, 'challenge_dir': None, 'train_annotations': '/mvfouls/train_720p/annotations.json', 'val_annotations': '/mvfouls/valid_720p/annotations.json', 'test_annotations': None, 'challenge_annotations': None, 'config': None, 'multi_task': True, 'num_classes': 2, 'pretrained': True, 'freeze_backbone': False, 'epochs': 1, 'batch_size': 1, 'lr': 0.0001, 'weight_decay': 0.0001, 'optimizer': 'adamw', 'scheduler': 'cosine', 'warmup_steps': 1000, 'max_frames': 32, 'fps': 25, 'image_size': 224, 'num_workers': 4, 'gradient_accumulation_steps': 1, 'max_grad_norm': 1.0, 'log_interval': 50, 'eval_interval': 1, 'save_every': 2, 'output_dir': './outputs', 'resume': None, 'seed': 42, 'device': 'auto', 'dry_run': False}
+2025-06-22 11:57:01,191 - __main__ - INFO - Setting up data transforms...
+2025-06-22 11:57:01,193 - __main__ - INFO - Creating training dataset...
+2025-06-22 11:57:01,193 - __main__ - ERROR - Training failed with error: Split directory \mvfouls\train_720p does not exist

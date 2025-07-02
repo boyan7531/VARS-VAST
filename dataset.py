@@ -222,11 +222,7 @@ class MVFoulsDataset(Dataset):
         bag_of_clips: bool = False,
         max_clips_per_action: int = 8,
         min_clips_per_action: int = 1,
-        clip_sampling_strategy: str = 'random',  # 'random', 'uniform', 'all'
-        # Random start augmentation for training
-        random_start_augmentation: bool = False,
-        min_start_frame: int = 45,
-        max_start_frame: int = 74
+        clip_sampling_strategy: str = 'random'  # 'random', 'uniform', 'all'
     ):
         """
         Args:
@@ -245,9 +241,6 @@ class MVFoulsDataset(Dataset):
             max_clips_per_action (int): Maximum clips per action (for memory management)
             min_clips_per_action (int): Minimum clips per action (actions with fewer clips are excluded)
             clip_sampling_strategy (str): How to sample clips when exceeding max_clips_per_action
-            random_start_augmentation (bool): If True, randomly sample start frame for training augmentation
-            min_start_frame (int): Minimum start frame for random augmentation (default: 45)
-            max_start_frame (int): Maximum start frame for random augmentation (default: 74)
         """
         # Store parameters
         self.split = split
@@ -263,11 +256,6 @@ class MVFoulsDataset(Dataset):
         self.max_clips_per_action = max_clips_per_action
         self.min_clips_per_action = min_clips_per_action
         self.clip_sampling_strategy = clip_sampling_strategy
-        
-        # Random start augmentation parameters
-        self.random_start_augmentation = random_start_augmentation
-        self.min_start_frame = min_start_frame
-        self.max_start_frame = max_start_frame
         
         # Memory cache for "mem" mode
         self._memory_cache = {} if cache_mode == "mem" else None
@@ -488,25 +476,6 @@ class MVFoulsDataset(Dataset):
             print(f"Warning: Could not convert '{value}' to float, using 0.0")
             return 0.0
     
-    def _get_frame_window(self) -> Tuple[int, int]:
-        """
-        Calculate the start and end frames for the current clip.
-        
-        Returns:
-            Tuple[int, int]: (start_frame, end_frame) indices
-        """
-        if self.random_start_augmentation and self.split == 'train':
-            # Random start frame between min_start_frame and max_start_frame
-            # Ensure we get exactly num_frames (32) frames with the foul included
-            import random
-            start_frame = random.randint(self.min_start_frame, self.max_start_frame)
-        else:
-            # Original behavior: center around center_frame
-            start_frame = max(0, self.center_frame - self.num_frames // 2)
-        
-        end_frame = start_frame + self.num_frames - 1
-        return start_frame, end_frame
-    
     def _load_video_decord(self, video_path: Path) -> np.ndarray:
         """Load video using decord for faster performance."""
         # Suppress decord's ffmpeg warnings by temporarily redirecting stderr
@@ -527,8 +496,9 @@ class MVFoulsDataset(Dataset):
             os.close(old_stderr)
             devnull.close()
 
-            # Calculate frame indices using new method
-            start_frame, end_frame = self._get_frame_window()
+            # Calculate frame indices
+            start_frame = max(0, self.center_frame - self.num_frames // 2)
+            end_frame = start_frame + self.num_frames - 1
             
             # Adjust if video is too short
             if total_frames > 0 and end_frame >= total_frames:
@@ -589,9 +559,10 @@ class MVFoulsDataset(Dataset):
             container = av.open(str(video_path))
             video_stream = container.streams.video[0]
             
-            # Calculate frame indices using new method
+            # Calculate frame indices
             total_frames = video_stream.frames
-            start_frame, end_frame = self._get_frame_window()
+            start_frame = max(0, self.center_frame - self.num_frames // 2)
+            end_frame = start_frame + self.num_frames - 1
             
             if total_frames > 0 and end_frame >= total_frames:
                 end_frame = total_frames - 1
@@ -648,8 +619,9 @@ class MVFoulsDataset(Dataset):
         # Get clip length first so we can adjust the frame window if needed
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 
-        # Calculate frame window using new method
-        start_frame, end_frame = self._get_frame_window()
+        # Calculate frame window
+        start_frame = max(0, self.center_frame - self.num_frames // 2)
+        end_frame = start_frame + self.num_frames - 1
 
         # If the video is too short, adjust the window
         if total_frames > 0 and end_frame >= total_frames:
@@ -957,10 +929,7 @@ class MVFoulsDataset(Dataset):
             'center_frame': self.center_frame,
             'num_frames': self.num_frames,
             'cache_mode': self.cache_mode,
-            'return_uint8': self.return_uint8,
-            'random_start_augmentation': self.random_start_augmentation,
-            'min_start_frame': self.min_start_frame if self.random_start_augmentation else None,
-            'max_start_frame': self.max_start_frame if self.random_start_augmentation else None
+            'return_uint8': self.return_uint8
         }
         
         if self.load_annotations:

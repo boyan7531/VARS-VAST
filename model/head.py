@@ -5,21 +5,6 @@ import math
 from typing import Optional, Dict, Any, Tuple, List, Union
 import pandas as pd
 
-# Import task-specific heads
-try:
-    from .task_heads import build_task_head
-except ImportError:
-    # Fallback if task_heads not available
-    build_task_head = None
-
-# Import LDAM loss
-try:
-    from .ldam_loss import LDAMLoss, MultiTaskLDAMLoss
-except ImportError:
-    # Fallback if LDAM loss not available
-    LDAMLoss = None
-    MultiTaskLDAMLoss = None
-
 # Import task metadata utilities
 try:
     from utils import (
@@ -214,15 +199,9 @@ class MVFoulsHead(nn.Module):
         task_specific_layers: int = 1,  # Number of task-specific layers
         use_batch_norm: bool = True,  # Use batch normalization
         activation: str = 'relu',  # Activation function
-        # Task-specific head configuration
-        per_task_head_cfg: Optional[Dict[str, Dict]] = None,
         # Bag-of-clips parameters
         clip_pooling_type: str = 'mean',  # 'mean', 'max', 'attention'
-        clip_pooling_temperature: float = 1.0,  # Temperature for attention pooling
-        # LDAM loss parameters
-        task_class_counts: Optional[Dict[str, List[int]]] = None,  # Class counts per task for LDAM
-        ldam_max_m: float = 0.5,  # Maximum margin for LDAM
-        ldam_s: float = 30.0  # Scale parameter for LDAM
+        clip_pooling_temperature: float = 1.0  # Temperature for attention pooling
     ):
         super().__init__()
         
@@ -239,9 +218,6 @@ class MVFoulsHead(nn.Module):
         self.freeze_mode = freeze_mode
         self.gradient_checkpointing = gradient_checkpointing
         self.enable_localizer = enable_localizer
-        
-        # Task-specific head configuration
-        self.per_task_head_cfg = per_task_head_cfg or {}
         
         # Bag-of-clips parameters
         self.clip_pooling_type = clip_pooling_type
@@ -337,20 +313,6 @@ class MVFoulsHead(nn.Module):
             self.register_buffer('running_acc', torch.zeros(1))
             self.register_buffer('confusion_matrix', torch.zeros(self.num_classes, self.num_classes))
         
-        # Initialize LDAM loss if needed
-        self.ldam_loss = None
-        self.ldam_max_m = ldam_max_m
-        self.ldam_s = ldam_s
-        if task_class_counts is not None and MultiTaskLDAMLoss is not None:
-            # Initialize LDAM loss with provided class counts
-            self.ldam_loss = MultiTaskLDAMLoss(
-                task_cls_num_lists=task_class_counts,
-                max_m=ldam_max_m,
-                task_weights=self.task_weights,
-                s=ldam_s,
-                reduction='mean'
-            )
-        
         # Initialize weights
         self._init_weights(init_std)
         
@@ -389,11 +351,7 @@ class MVFoulsHead(nn.Module):
             # Batch normalization - use GroupNorm for batch_size=1 compatibility
             if self.use_batch_norm:
                 # Use GroupNorm instead of BatchNorm to handle batch_size=1
-                # Ensure num_groups divides out_dim evenly
                 num_groups = min(32, max(1, out_dim // 16))
-                # Adjust num_groups to be a divisor of out_dim
-                while out_dim % num_groups != 0 and num_groups > 1:
-                    num_groups -= 1
                 shared_layers.append(nn.GroupNorm(num_groups, out_dim))
             
             # Activation
@@ -410,53 +368,33 @@ class MVFoulsHead(nn.Module):
         # Task-specific heads
         self.task_heads = nn.ModuleDict()
         for task_name, num_cls in zip(self.task_names, self.num_classes_per_task):
-            # Check if we have a custom head configuration for this task
-            cfg = self.per_task_head_cfg.get(task_name, {})
-            head_type = cfg.pop('type', 'linear')  # default = existing single FC
+            task_layers = []
+            task_current_dim = self.hidden_dim
             
-            if head_type == 'linear' or build_task_head is None:
-                # Use existing logic for linear head or fallback if task_heads not available
-                task_layers = []
-                task_current_dim = self.hidden_dim
+            # Task-specific intermediate layers
+            for i in range(self.task_specific_layers):
+                if i == self.task_specific_layers - 1:
+                    # Last layer goes to task's number of classes
+                    out_dim = num_cls
+                else:
+                    # Intermediate task-specific layers
+                    out_dim = self.hidden_dim // 2
                 
-                # Task-specific intermediate layers
-                for i in range(self.task_specific_layers):
-                    if i == self.task_specific_layers - 1:
-                        # Last layer goes to task's number of classes
-                        out_dim = num_cls
-                    else:
-                        # Intermediate task-specific layers
-                        out_dim = self.hidden_dim // 2
-                    
-                    task_layers.append(nn.Linear(task_current_dim, out_dim))
-                    
-                    # Only add activation/dropout for intermediate layers, not final layer
-                    if i < self.task_specific_layers - 1:
-                        if self.use_batch_norm:
-                            # Use GroupNorm instead of BatchNorm to handle batch_size=1
-                            # Ensure num_groups divides out_dim evenly
-                            num_groups = min(32, max(1, out_dim // 16))
-                            # Adjust num_groups to be a divisor of out_dim
-                            while out_dim % num_groups != 0 and num_groups > 1:
-                                num_groups -= 1
-                            task_layers.append(nn.GroupNorm(num_groups, out_dim))
-                        task_layers.append(act_fn)
-                        if self.dropout_p is not None and self.dropout_p > 0:
-                            task_layers.append(nn.Dropout(self.dropout_p))
-                    
-                    task_current_dim = out_dim
+                task_layers.append(nn.Linear(task_current_dim, out_dim))
                 
-                self.task_heads[task_name] = nn.Sequential(*task_layers)
-            else:
-                # Use the new task head factory function
-                try:
-                    head = build_task_head(head_type, self.hidden_dim, num_cls, **cfg)
-                    self.task_heads[task_name] = head
-                except Exception as e:
-                    # Fallback to linear head if custom head creation fails
-                    print(f"Warning: Failed to create {head_type} head for task {task_name}: {e}")
-                    print(f"Falling back to linear head for task {task_name}")
-                    self.task_heads[task_name] = nn.Linear(self.hidden_dim, num_cls)
+                # Only add activation/dropout for intermediate layers, not final layer
+                if i < self.task_specific_layers - 1:
+                    if self.use_batch_norm:
+                        # Use GroupNorm instead of BatchNorm to handle batch_size=1
+                        num_groups = min(32, max(1, out_dim // 16))
+                        task_layers.append(nn.GroupNorm(num_groups, out_dim))
+                    task_layers.append(act_fn)
+                    if self.dropout_p is not None and self.dropout_p > 0:
+                        task_layers.append(nn.Dropout(self.dropout_p))
+                
+                task_current_dim = out_dim
+            
+            self.task_heads[task_name] = nn.Sequential(*task_layers)
         
         # Keep single classifier for backward compatibility (will be deprecated)
         self.classifier = nn.Linear(self.hidden_dim, self.num_classes)
@@ -640,17 +578,6 @@ class MVFoulsHead(nn.Module):
         # Store features before shared layers
         extras['feat'] = x
         
-        # Ensure tensor is 2D before shared layers
-        if x.dim() > 2:
-            # This shouldn't happen if clip pooling works correctly
-            # Find the correct way to reshape based on the actual tensor structure
-            if x.dim() == 4 and x.shape[2] == 1:  # (B, N_clips, 1, C)
-                x = x.squeeze(2)  # Remove the singleton dimension -> (B, N_clips, C)
-                x = x.mean(dim=1)  # Pool over clips -> (B, C)
-            else:
-                # Fallback: flatten extra dimensions
-                x = x.view(x.shape[0], -1)
-        
         # Pass through shared layers (if any)
         if hasattr(self, 'shared_layers'):
             x = self.shared_layers(x)
@@ -793,17 +720,6 @@ class MVFoulsHead(nn.Module):
                 else:
                     gamma_val = focal_gamma
                 task_loss = self._focal_loss(logits, targets, gamma_val, class_weights)
-            elif loss_type == 'ldam':
-                # Use LDAM loss if available
-                if self.ldam_loss is not None and hasattr(self.ldam_loss.task_losses, task_name):
-                    task_loss = self.ldam_loss.task_losses[task_name](logits, targets)
-                else:
-                    # Fallback to CE if LDAM not available for this task
-                    if class_weights is not None:
-                        task_loss = F.cross_entropy(logits, targets, weight=class_weights, 
-                                                  label_smoothing=self.label_smoothing)
-                    else:
-                        task_loss = F.cross_entropy(logits, targets, label_smoothing=self.label_smoothing)
             elif loss_type == 'ce':
                 if class_weights is not None:
                     task_loss = F.cross_entropy(logits, targets, weight=class_weights, 
@@ -1201,14 +1117,11 @@ def build_head(**kwargs) -> MVFoulsHead:
     return MVFoulsHead(**kwargs)
 
 
-def build_multi_task_head(per_task_head_cfg: Optional[Dict[str, Dict]] = None, **kwargs) -> MVFoulsHead:
+def build_multi_task_head(**kwargs) -> MVFoulsHead:
     """
     Factory function to build multi-task MVFoulsHead with MVFouls task metadata.
     
     Args:
-        per_task_head_cfg: Optional dict mapping task names to head configurations.
-                          Format: {'task_name': {'type': 'deep_mlp', 'hidden': 1024, 'depth': 3}}
-                          Default type is 'linear' if not specified.
         **kwargs: Additional arguments to pass to MVFoulsHead constructor
         
     Returns:
@@ -1233,8 +1146,6 @@ def build_multi_task_head(per_task_head_cfg: Optional[Dict[str, Dict]] = None, *
         'use_batch_norm': True,  # Normalization for stability
         'activation': 'relu',  # Activation function
         'dropout': 0.3,  # Regularization
-        # Add per-task head configuration
-        'per_task_head_cfg': per_task_head_cfg,
     }
     
     # Override with user-provided kwargs

@@ -44,12 +44,6 @@ except ImportError:
     compute_overall_metrics = None
     get_mvfouls_class_weights = None
 
-# Import thresholding utilities
-try:
-    from thresholding import predict_with_thresholds
-except ImportError:
-    predict_with_thresholds = None
-
 
 class MVFoulsModel(nn.Module):
     """
@@ -93,14 +87,6 @@ class MVFoulsModel(nn.Module):
         class_weights: Optional[Union[torch.Tensor, Dict[str, torch.Tensor]]] = None,
         task_loss_weights: Optional[Dict[str, float]] = None,
         task_focal_gamma_map: Optional[Dict[str, float]] = None,
-        
-        # Task-specific head configuration
-        per_task_head_cfg: Optional[Dict[str, Dict]] = None,
-        
-        # LDAM loss configuration
-        task_class_counts: Optional[Dict[str, List[int]]] = None,
-        ldam_max_m: float = 0.5,
-        ldam_s: float = 30.0,
         
         # Model configuration
         model_name: str = "MVFoulsModel",
@@ -186,7 +172,6 @@ class MVFoulsModel(nn.Module):
         if multi_task and get_task_metadata is not None:
             # Multi-task mode with automatic task detection
             self.head = build_multi_task_head(
-                per_task_head_cfg=per_task_head_cfg,
                 in_dim=backbone_dim,
                 dropout=head_dropout,
                 pooling=head_pooling,
@@ -201,11 +186,7 @@ class MVFoulsModel(nn.Module):
                 task_weights=class_weights if isinstance(class_weights, dict) else None,
                 task_loss_weights=task_loss_weights,
                 clip_pooling_type=kwargs.get('clip_pooling_type', 'mean'),
-                clip_pooling_temperature=kwargs.get('clip_pooling_temperature', 1.0),
-                # LDAM parameters
-                task_class_counts=task_class_counts,
-                ldam_max_m=ldam_max_m,
-                ldam_s=ldam_s
+                clip_pooling_temperature=kwargs.get('clip_pooling_temperature', 1.0)
             )
         else:
             # Single-task mode
@@ -393,21 +374,16 @@ class MVFoulsModel(nn.Module):
     def predict(
         self, 
         x: torch.Tensor, 
-        thresholds: Optional[Union[List[float], torch.Tensor, Dict[str, List[float]]]] = None,
         return_probs: bool = False,
-        temperature: float = 1.0,
-        fallback_strategy: str = 'argmax'
+        temperature: float = 1.0
     ) -> Dict[str, Any]:
         """
-        Make predictions on input video with optional per-class thresholds.
+        Make predictions on input video.
         
         Args:
             x: Input video tensor
-            thresholds: Optional per-class thresholds. For single-task: list/tensor of shape (num_classes,).
-                       For multi-task: dict mapping task names to threshold lists.
             return_probs: Whether to return probabilities
             temperature: Temperature for probability calibration
-            fallback_strategy: Strategy when no class exceeds threshold ('argmax', 'none', 'highest_prob')
             
         Returns:
             Dict containing predictions, probabilities, and metadata
@@ -429,18 +405,7 @@ class MVFoulsModel(nn.Module):
                     
                     # Get predictions
                     task_probs = F.softmax(task_logits, dim=1)
-                    
-                    # Use thresholds if provided and available
-                    if thresholds is not None and isinstance(thresholds, dict) and task_name in thresholds:
-                        if predict_with_thresholds is not None:
-                            task_preds = predict_with_thresholds(
-                                task_probs, thresholds[task_name], fallback_strategy
-                            )
-                        else:
-                            # Fallback to argmax if thresholding utilities not available
-                            task_preds = torch.argmax(task_logits, dim=1)
-                    else:
-                        task_preds = torch.argmax(task_logits, dim=1)
+                    task_preds = torch.argmax(task_logits, dim=1)
                     
                     predictions[task_name] = task_preds
                     if return_probs:
@@ -464,16 +429,7 @@ class MVFoulsModel(nn.Module):
                 
                 # Get predictions
                 probs = F.softmax(logits, dim=1)
-                
-                # Use thresholds if provided and available
-                if thresholds is not None and not isinstance(thresholds, dict):
-                    if predict_with_thresholds is not None:
-                        preds = predict_with_thresholds(probs, thresholds, fallback_strategy)
-                    else:
-                        # Fallback to argmax if thresholding utilities not available
-                        preds = torch.argmax(logits, dim=1)
-                else:
-                    preds = torch.argmax(logits, dim=1)
+                preds = torch.argmax(logits, dim=1)
                 
                 result = {
                     'predictions': preds,
@@ -1031,7 +987,6 @@ def build_multi_task_model(
     backbone_arch: str = 'swin',
     backbone_pretrained: bool = True,
     backbone_freeze_mode: str = 'none',
-    per_task_head_cfg: Optional[Dict[str, Dict]] = None,
     **kwargs
 ) -> MVFoulsModel:
     """
@@ -1041,7 +996,6 @@ def build_multi_task_model(
         backbone_arch: Backbone architecture ('swin', 'mvit')
         backbone_pretrained: Use pretrained backbone
         backbone_freeze_mode: Backbone freeze mode ('none', 'freeze_all', etc.)
-        per_task_head_cfg: Optional task-specific head configurations
         **kwargs: Additional arguments
         
     Returns:
@@ -1055,7 +1009,6 @@ def build_multi_task_model(
         backbone_pretrained=backbone_pretrained,
         backbone_freeze_mode=backbone_freeze_mode,
         multi_task=True,
-        per_task_head_cfg=per_task_head_cfg,
         **kwargs
     )
 
