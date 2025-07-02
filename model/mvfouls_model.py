@@ -97,6 +97,11 @@ class MVFoulsModel(nn.Module):
         # Task-specific head configuration
         per_task_head_cfg: Optional[Dict[str, Dict]] = None,
         
+        # LDAM loss configuration
+        task_class_counts: Optional[Dict[str, List[int]]] = None,
+        ldam_max_m: float = 0.5,
+        ldam_s: float = 30.0,
+        
         # Model configuration
         model_name: str = "MVFoulsModel",
         model_version: str = "1.0",
@@ -196,7 +201,11 @@ class MVFoulsModel(nn.Module):
                 task_weights=class_weights if isinstance(class_weights, dict) else None,
                 task_loss_weights=task_loss_weights,
                 clip_pooling_type=kwargs.get('clip_pooling_type', 'mean'),
-                clip_pooling_temperature=kwargs.get('clip_pooling_temperature', 1.0)
+                clip_pooling_temperature=kwargs.get('clip_pooling_temperature', 1.0),
+                # LDAM parameters
+                task_class_counts=task_class_counts,
+                ldam_max_m=ldam_max_m,
+                ldam_s=ldam_s
             )
         else:
             # Single-task mode

@@ -450,6 +450,8 @@ def create_balanced_model(
     use_effective_weights: bool = False,
     freeze_mode: str = 'gradual',
     per_task_head_cfg: Optional[Dict[str, Dict]] = None,
+    ldam_max_m: float = 0.5,
+    ldam_s: float = 30.0,
     **model_kwargs
 ) -> MVFoulsModel:
     """
@@ -476,6 +478,7 @@ def create_balanced_model(
         # Prepare task-specific configurations with flexible loss types
         task_weights = {}
         loss_types_list = []
+        task_class_counts = {}  # For LDAM loss
         
         # Default loss configuration if not provided
         if loss_types_per_task is None:
@@ -485,10 +488,20 @@ def create_balanced_model(
                 'offence': 'ce'
             }
         
+        # Check if any task uses LDAM loss
+        using_ldam = any(loss_type == 'ldam' for loss_type in loss_types_per_task.values())
+        
         for task_name in task_names:
             # Get loss type for this task
             loss_type = loss_types_per_task.get(task_name, 'ce')
             loss_types_list.append(loss_type)
+            
+            # Collect class counts for LDAM loss if needed
+            if using_ldam and imbalance_analysis and task_name in imbalance_analysis:
+                analysis = imbalance_analysis[task_name]
+                class_counts = analysis['class_counts']
+                task_class_counts[task_name] = class_counts
+                logger.info(f"📊 {task_name}: Collected class counts for LDAM: {class_counts}")
             
             # Optional: Add class weights (method depends on use_effective_weights flag)
             if use_class_weights and imbalance_analysis and task_name in imbalance_analysis:
@@ -538,7 +551,11 @@ def create_balanced_model(
             backbone_checkpointing=backbone_checkpointing,
             clip_pooling_type=model_kwargs.get('clip_pooling_type', 'mean'),
             clip_pooling_temperature=model_kwargs.get('clip_pooling_temperature', 1.0),
-            per_task_head_cfg=per_task_head_cfg  # New: task-specific head configuration
+            per_task_head_cfg=per_task_head_cfg,  # New: task-specific head configuration
+            # LDAM loss parameters
+            task_class_counts=task_class_counts if task_class_counts else None,
+            ldam_max_m=ldam_max_m,
+            ldam_s=ldam_s
         )
         
         # Add summary of what the model will predict
@@ -871,6 +888,12 @@ def main():
                         help='Per-task loss types in canonical task order '
                              '(format: task_name loss_type pairs). Example: --loss-types action_class ce severity focal offence ce')
     
+    # LDAM loss arguments
+    parser.add_argument('--ldam-max-m', type=float, default=0.5,
+                        help='Maximum margin for LDAM loss (default: 0.5)')
+    parser.add_argument('--ldam-s', type=float, default=30.0,
+                        help='Scale parameter for LDAM loss (default: 30.0)')
+    
     # Advanced task weighting arguments
     parser.add_argument('--weighting-strategy', type=str, default='inverse_accuracy',
                         choices=['uniform', 'inverse_accuracy', 'inverse_f1', 'difficulty'],
@@ -917,7 +940,7 @@ def main():
         if len(args.loss_types) % 2 != 0:
             raise ValueError("--loss-types must have even number of arguments (task_name loss_type pairs)")
         
-        valid_loss_types = ['ce', 'focal', 'bce']
+        valid_loss_types = ['ce', 'focal', 'bce', 'ldam']
         for i in range(0, len(args.loss_types), 2):
             task_name = args.loss_types[i]
             loss_type = args.loss_types[i + 1]
@@ -1146,7 +1169,10 @@ def main():
             clip_pooling_temperature=args.clip_pooling_temperature,
             freeze_mode=args.freeze_mode,
             backbone_arch=args.backbone_arch,
-            per_task_head_cfg=getattr(args, 'task_head_cfg', None)  # New: task-specific head configuration
+            per_task_head_cfg=getattr(args, 'task_head_cfg', None),  # New: task-specific head configuration
+            # LDAM parameters
+            ldam_max_m=args.ldam_max_m,
+            ldam_s=args.ldam_s
         )
         
         # Log bag-of-clips configuration

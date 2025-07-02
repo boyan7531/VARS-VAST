@@ -12,6 +12,14 @@ except ImportError:
     # Fallback if task_heads not available
     build_task_head = None
 
+# Import LDAM loss
+try:
+    from .ldam_loss import LDAMLoss, MultiTaskLDAMLoss
+except ImportError:
+    # Fallback if LDAM loss not available
+    LDAMLoss = None
+    MultiTaskLDAMLoss = None
+
 # Import task metadata utilities
 try:
     from utils import (
@@ -210,7 +218,11 @@ class MVFoulsHead(nn.Module):
         per_task_head_cfg: Optional[Dict[str, Dict]] = None,
         # Bag-of-clips parameters
         clip_pooling_type: str = 'mean',  # 'mean', 'max', 'attention'
-        clip_pooling_temperature: float = 1.0  # Temperature for attention pooling
+        clip_pooling_temperature: float = 1.0,  # Temperature for attention pooling
+        # LDAM loss parameters
+        task_class_counts: Optional[Dict[str, List[int]]] = None,  # Class counts per task for LDAM
+        ldam_max_m: float = 0.5,  # Maximum margin for LDAM
+        ldam_s: float = 30.0  # Scale parameter for LDAM
     ):
         super().__init__()
         
@@ -324,6 +336,20 @@ class MVFoulsHead(nn.Module):
             # Single task metrics (backward compatibility)
             self.register_buffer('running_acc', torch.zeros(1))
             self.register_buffer('confusion_matrix', torch.zeros(self.num_classes, self.num_classes))
+        
+        # Initialize LDAM loss if needed
+        self.ldam_loss = None
+        self.ldam_max_m = ldam_max_m
+        self.ldam_s = ldam_s
+        if task_class_counts is not None and MultiTaskLDAMLoss is not None:
+            # Initialize LDAM loss with provided class counts
+            self.ldam_loss = MultiTaskLDAMLoss(
+                task_cls_num_lists=task_class_counts,
+                max_m=ldam_max_m,
+                task_weights=self.task_weights,
+                s=ldam_s,
+                reduction='mean'
+            )
         
         # Initialize weights
         self._init_weights(init_std)
@@ -767,6 +793,17 @@ class MVFoulsHead(nn.Module):
                 else:
                     gamma_val = focal_gamma
                 task_loss = self._focal_loss(logits, targets, gamma_val, class_weights)
+            elif loss_type == 'ldam':
+                # Use LDAM loss if available
+                if self.ldam_loss is not None and hasattr(self.ldam_loss.task_losses, task_name):
+                    task_loss = self.ldam_loss.task_losses[task_name](logits, targets)
+                else:
+                    # Fallback to CE if LDAM not available for this task
+                    if class_weights is not None:
+                        task_loss = F.cross_entropy(logits, targets, weight=class_weights, 
+                                                  label_smoothing=self.label_smoothing)
+                    else:
+                        task_loss = F.cross_entropy(logits, targets, label_smoothing=self.label_smoothing)
             elif loss_type == 'ce':
                 if class_weights is not None:
                     task_loss = F.cross_entropy(logits, targets, weight=class_weights, 
