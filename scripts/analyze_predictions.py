@@ -47,7 +47,7 @@ def setup_logging(level: str = "INFO"):
 
 
 def load_model(ckpt_path: Path, device: torch.device) -> MVFoulsModel:
-    ckpt = torch.load(str(ckpt_path), map_location=device)
+    ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
     cfg = ckpt.get("config", {}).get("model_config", {})
 
     model = build_multi_task_model(
