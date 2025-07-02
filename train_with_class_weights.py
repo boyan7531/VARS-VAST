@@ -615,7 +615,7 @@ def create_balanced_model(
         
         # Filter out conflicting kwargs
         filtered_kwargs = {k: v for k, v in model_kwargs.items() 
-                          if k not in ['head_loss_type', 'head_label_smoothing']}
+                          if k not in ['head_loss_type', 'head_label_smoothing', 'clip_pooling_type', 'clip_pooling_temperature']}
         
         model = build_single_task_model(
             num_classes=2,
