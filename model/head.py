@@ -201,7 +201,11 @@ class MVFoulsHead(nn.Module):
         activation: str = 'relu',  # Activation function
         # Bag-of-clips parameters
         clip_pooling_type: str = 'mean',  # 'mean', 'max', 'attention'
-        clip_pooling_temperature: float = 1.0  # Temperature for attention pooling
+        clip_pooling_temperature: float = 1.0,  # Temperature for attention pooling
+        # Logit-adjustment (Balanced Softmax) parameters
+        use_logit_adjustment: bool = False,
+        logit_adjustment_temperature: float = 1.0,
+        class_prior_logits: Optional[Union[torch.Tensor, Dict[str, torch.Tensor]]] = None  # Pre-computed prior shifts
     ):
         super().__init__()
         
@@ -222,6 +226,29 @@ class MVFoulsHead(nn.Module):
         # Bag-of-clips parameters
         self.clip_pooling_type = clip_pooling_type
         self.clip_pooling_temperature = clip_pooling_temperature
+        
+        # ------------------------------------------------------------------
+        # Balanced Softmax / Logit-Adjustment configuration
+        # ------------------------------------------------------------------
+        self.use_logit_adjustment = use_logit_adjustment
+        self.logit_adjustment_temperature = logit_adjustment_temperature
+        if self.use_logit_adjustment:
+            if self.multi_task:
+                # Expect a dict mapping task_name -> tensor(C,)
+                if not isinstance(class_prior_logits, dict):
+                    raise ValueError("For multi-task heads, class_prior_logits must be a dict {task: tensor} when use_logit_adjustment=True")
+                self.class_prior_logits = {}
+                for task_name, prior in class_prior_logits.items():
+                    prior = prior.float()
+                    # Register each as separate buffer to keep device synchronization & state dict support
+                    buf_name = f"class_prior_logits_{task_name}"
+                    self.register_buffer(buf_name, prior, persistent=True)
+                    self.class_prior_logits[task_name] = getattr(self, buf_name)
+            else:
+                # Single-task – expect Tensor
+                if not isinstance(class_prior_logits, torch.Tensor):
+                    raise ValueError("class_prior_logits tensor must be provided for single-task when use_logit_adjustment=True")
+                self.register_buffer('class_prior_logits', class_prior_logits.float(), persistent=True)
         
         # Multi-task configuration
         self.multi_task = multi_task
@@ -658,6 +685,10 @@ class MVFoulsHead(nn.Module):
         """
         class_weights = class_weights or self.class_weights
         
+        # Apply logit adjustment if enabled (single-task)
+        if self.use_logit_adjustment:
+            logits = logits + self.class_prior_logits.to(logits.device)
+        
         if self.loss_type == 'ce':
             loss_fn = nn.CrossEntropyLoss(
                 weight=class_weights, 
@@ -706,6 +737,12 @@ class MVFoulsHead(nn.Module):
                 
             logits = logits_dict[task_name]
             targets = targets_dict[task_name]
+            
+            # ------------------------------------------------------------------
+            # Apply logit adjustment if enabled (per task)
+            # ------------------------------------------------------------------
+            if self.use_logit_adjustment and task_name in self.class_prior_logits:
+                logits = logits + self.class_prior_logits[task_name].to(logits.device)
             
             # Get task-specific loss type and class weights
             task_idx = self.task_names.index(task_name)

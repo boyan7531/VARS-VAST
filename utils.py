@@ -943,6 +943,32 @@ def make_weighted_sampler_from_metrics(dataset, metrics, task='action_class',
     return sampler
 
 
+def get_class_prior_logits(class_counts, temp: float = 1.0):
+    """Compute logit-adjustment shift (Balanced Softmax) from class counts.
+
+    Args:
+        class_counts (Union[List[int], torch.Tensor, np.ndarray]): Per-class sample counts.
+        temp (float, optional): Temperature scaling parameter T. Defaults to 1.0.
+
+    Returns:
+        torch.Tensor: Tensor of shape (C,) containing log(1/π_c)/T values that
+            can be added to raw logits before standard CE/Focal calculation.
+    """
+    # Convert to tensor
+    counts = torch.as_tensor(class_counts, dtype=torch.float32)
+    # Replace zeros to avoid log(0)
+    counts = torch.clamp(counts, min=1.0)
+    # Convert to prior probabilities π_c
+    priors = counts / counts.sum()
+    # Guard against NANs
+    priors = torch.clamp(priors, min=1e-12)
+    # Compute logit adjustment: log(1/π_c) / T
+    prior_logits = torch.log(1.0 / priors)
+    if temp != 1.0:
+        prior_logits = prior_logits / temp
+    return prior_logits.float()
+
+
 if __name__ == "__main__":
     test_class_weights()
     print()

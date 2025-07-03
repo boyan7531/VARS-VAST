@@ -56,7 +56,8 @@ from utils import (
     analyze_class_distribution,
     compute_task_metrics,
     format_metrics_table,
-    make_weighted_sampler_from_metrics
+    make_weighted_sampler_from_metrics,
+    get_class_prior_logits
 )
 
 
@@ -844,6 +845,12 @@ def main():
     # Loss and Weighting (Simplified for Stability)
     parser.add_argument('--loss-type', type=str, default='ce', choices=['ce', 'focal'], help='Primary loss type (default: ce). "focal" is experimental.')
     
+    # Logit-Adjustment (Balanced Softmax) arguments
+    parser.add_argument('--logit-adjustment', action='store_true',
+                        help='Enable Balanced Softmax / Logit-Adjustment using class priors')
+    parser.add_argument('--logit-adjustment-temperature', type=float, default=1.0,
+                        help='Temperature scaling for logit-adjustment (default: 1.0)')
+    
     args = parser.parse_args()
     
     # Parse and validate loss types configuration
@@ -1080,6 +1087,45 @@ def main():
             freeze_mode=args.freeze_mode,
             backbone_arch=args.backbone_arch
         )
+        
+        # ------------------------------------------------------------------
+        # Enable Balanced Softmax / Logit-Adjustment if requested
+        # ------------------------------------------------------------------
+        if args.logit_adjustment:
+            if not imbalance_analysis:
+                logger.warning("⚠️  --logit-adjustment requested but dataset statistics are unavailable. Disabling logit adjustment for this run.")
+            else:
+                logger.info("🔧 Enabling logit adjustment using class priors (Balanced Softmax)")
+
+                if args.multi_task:
+                    prior_logits_map = {}
+                    for task_name, analysis in imbalance_analysis.items():
+                        prior_logits_map[task_name] = get_class_prior_logits(
+                            analysis['class_counts'], temp=args.logit_adjustment_temperature)
+
+                    model.head.use_logit_adjustment = True
+                    model.head.class_prior_logits = {}
+                    for task_name, prior in prior_logits_map.items():
+                        buf_name = f'class_prior_logits_{task_name}'
+                        # Register buffer so it is moved with model.to(device)
+                        model.head.register_buffer(buf_name, prior, persistent=True)
+                        model.head.class_prior_logits[task_name] = getattr(model.head, buf_name)
+
+                else:
+                    # Single-task: pick the first available task stats
+                    single_task_name = next(iter(imbalance_analysis.keys()))
+                    prior_tensor = get_class_prior_logits(
+                        imbalance_analysis[single_task_name]['class_counts'],
+                        temp=args.logit_adjustment_temperature)
+
+                    model.head.use_logit_adjustment = True
+                    model.head.register_buffer('class_prior_logits', prior_tensor, persistent=True)
+
+                # Warn if label smoothing is non-zero (it usually negates Balanced Softmax gains)
+                if getattr(model.head, 'label_smoothing', 0.0) > 0.0:
+                    logger.warning("⚠️  Label-smoothing is > 0 while using logit adjustment. Consider setting label_smoothing=0 for maximum benefit.")
+
+                logger.info("✅ Logit adjustment buffers registered and enabled")
         
         # Log bag-of-clips configuration
         if args.bag_of_clips:
