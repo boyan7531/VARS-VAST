@@ -851,6 +851,10 @@ def main():
     parser.add_argument('--logit-adjustment-temperature', type=float, default=1.0,
                         help='Temperature scaling for logit-adjustment (default: 1.0)')
     
+    # Evaluation frequency
+    parser.add_argument('--eval-freq', type=int, default=1,
+                        help='Run validation every N epochs (default: 1)')
+    
     args = parser.parse_args()
     
     # Parse and validate loss types configuration
