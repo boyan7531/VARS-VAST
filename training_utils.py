@@ -16,8 +16,13 @@ from torch.utils.data import DataLoader
 from typing import Dict, List, Optional, Any, Tuple, Callable, Union
 import numpy as np
 import time
+import logging
 from collections import defaultdict
 from tqdm import tqdm
+
+# Setup logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 try:
     from utils import get_task_metadata, compute_task_metrics, format_metrics_table
@@ -419,7 +424,16 @@ class MultiTaskTrainer:
                         combined_targets[task_name].append(batch_targets[task_name])
                     else:
                         # Handle tensor targets (convert to dict format)
-                        combined_targets[task_name].append(batch_targets[:, task_idx] if batch_targets.dim() > 1 else batch_targets)
+                        if batch_targets.dim() > 1 and get_task_metadata is not None:
+                            metadata = get_task_metadata()
+                            task_names = metadata['task_names']
+                            if task_name in task_names:
+                                task_idx = task_names.index(task_name)
+                                combined_targets[task_name].append(batch_targets[:, task_idx])
+                            else:
+                                combined_targets[task_name].append(batch_targets[:, 0])
+                        else:
+                            combined_targets[task_name].append(batch_targets)
             
             # Convert to tensors
             for task_name in combined_logits.keys():
