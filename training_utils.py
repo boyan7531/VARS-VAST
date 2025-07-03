@@ -389,7 +389,29 @@ class MultiTaskTrainer:
                     loss_dict = self.model.compute_loss(logits_dict, targets_dict, return_dict=True)
                     eval_losses.append(loss_dict['total_loss'].item())
                     
-                    all_logits.append(logits_dict)
+                    # ------------------------------------------------------------------
+                    # Apply Balanced-Softmax logit adjustment for evaluation/metrics
+                    # ------------------------------------------------------------------
+                    if (hasattr(self.model, 'head') and
+                        getattr(self.model.head, 'use_logit_adjustment', False) and
+                        hasattr(self.model.head, 'class_prior_logits')):
+                        adjusted_logits = {}
+                        for t_name, t_logits in logits_dict.items():
+                            prior = None
+                            if isinstance(self.model.head.class_prior_logits, dict):
+                                prior = self.model.head.class_prior_logits.get(t_name, None)
+                            else:
+                                # Single tensor stored (single-task case handled elsewhere)
+                                prior = self.model.head.class_prior_logits
+
+                            if prior is not None:
+                                adjusted_logits[t_name] = t_logits + prior.to(t_logits.device)
+                            else:
+                                adjusted_logits[t_name] = t_logits
+                        all_logits.append(adjusted_logits)
+                    else:
+                        # No logit adjustment – use raw logits
+                        all_logits.append(logits_dict)
                     all_targets.append(targets_dict)
                 else:
                     print(f"DEBUG: Using single-task evaluation path")  # Debug line
