@@ -1267,7 +1267,6 @@ def main():
             dynamic_sampler=args.dynamic_sampler,
             dynamic_sampler_task=args.dynamic_sampler_task,
             dynamic_sampler_power=args.dynamic_sampler_power,
-            loss_type=args.loss_type
         )
         
         # Store additional configuration for adaptive weights
