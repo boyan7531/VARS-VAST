@@ -881,9 +881,8 @@ class MVFoulsDataset(Dataset):
 
         labels = []
         if self.bag_of_clips:
-            # For bag-of-clips, each item corresponds to an action.
-            # The label is consistent across all clips of an action.
-            for action_id in self.dataset_index:
+            # Iterate over stored action ids (not ClipInfo objects)
+            for action_id in self.action_index:
                 # Get the first clip of the action to find the label
                 first_clip = self.action_groups[action_id][0]
                 if first_clip.numeric_labels is not None:
