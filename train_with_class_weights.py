@@ -855,6 +855,10 @@ def main():
     parser.add_argument('--eval-freq', type=int, default=1,
                         help='Run validation every N epochs (default: 1)')
     
+    # Limit number of batches during validation (useful for smoke tests)
+    parser.add_argument('--eval-batches', type=int, default=None,
+                        help='Maximum number of batches to run during each validation pass (default: all)')
+    
     args = parser.parse_args()
     
     # Parse and validate loss types configuration
