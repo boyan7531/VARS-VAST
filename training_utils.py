@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 try:
-    from utils import get_task_metadata, compute_task_metrics, format_metrics_table
+    from utils import get_task_metadata, compute_task_metrics, format_metrics_table, make_weighted_sampler_from_metrics
     from model.mvfouls_model import MVFoulsModel
 except ImportError:
     print("Warning: Some imports failed. Make sure utils.py and model/mvfouls_model.py are available.")
@@ -48,7 +48,11 @@ class MultiTaskTrainer:
         eval_interval: int = 1000,
         gradient_accumulation_steps: int = 1,
         max_grad_norm: float = 1.0,
-        primary_task_weights: Optional[Dict[str, float]] = None
+        primary_task_weights: Optional[Dict[str, float]] = None,
+        # Dynamic sampler args
+        dynamic_sampler: bool = False,
+        dynamic_sampler_task: str = 'action_class',
+        dynamic_sampler_power: float = 1.0
     ):
         """
         Initialize multi-task trainer.
@@ -65,6 +69,9 @@ class MultiTaskTrainer:
             gradient_accumulation_steps: Steps for gradient accumulation
             max_grad_norm: Maximum gradient norm for clipping
             primary_task_weights: Optional weights for primary vs auxiliary tasks
+            dynamic_sampler: Whether to use dynamic sampler
+            dynamic_sampler_task: Task to use for dynamic sampler
+            dynamic_sampler_power: Power for dynamic sampler
         """
         self.model = model
         self.optimizer = optimizer
@@ -77,6 +84,11 @@ class MultiTaskTrainer:
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.max_grad_norm = max_grad_norm
         self.primary_task_weights = primary_task_weights or {}
+        
+        # Dynamic Sampler attributes
+        self.dynamic_sampler = dynamic_sampler
+        self.dynamic_sampler_task = dynamic_sampler_task
+        self.dynamic_sampler_power = dynamic_sampler_power
         
         # Training state
         self.step = 0

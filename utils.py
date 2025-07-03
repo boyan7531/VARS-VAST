@@ -904,6 +904,45 @@ def compute_overall_metrics(metrics_dict: Dict[str, Dict[str, float]]) -> Dict[s
     return overall_metrics
 
 
+def make_weighted_sampler_from_metrics(dataset, metrics, task='action_class',
+                                       power=1.0, min_weight=0.1, max_weight=10.0):
+    """
+    Build per-sample weights inversely proportional to per-class recall.
+    `power` controls aggressiveness (1 = inverse, 0.5 = sqrt-inverse, …).
+    """
+    if task not in metrics:
+        print(f"Warning: Task '{task}' not in metrics. Cannot create weighted sampler.")
+        return None
+
+    recall_per_class = metrics[task].get('recall_per_class')
+    if recall_per_class is None:
+        print(f"Warning: Recall not found for task '{task}'. Cannot create weighted sampler.")
+        return None
+
+    class_weights = {}
+    for i, recall in enumerate(recall_per_class):
+        weight = (1 / (recall + 1e-6)) ** power
+        weight = max(min_weight, min(max_weight, weight))
+        class_weights[i] = weight
+        print(f"Dynamic sampler: class-{i} weight = {weight:.4f}")
+
+    # Assumes dataset has a 'get_labels_for_task' method
+    try:
+        labels = dataset.get_labels_for_task(task)
+    except (ValueError, RuntimeError) as e:
+        print(f"Warning: Could not get labels for task '{task}'. Sampler not updated. Error: {e}")
+        return None
+        
+    sample_weights = torch.tensor([class_weights[label] for label in labels])
+
+    sampler = torch.utils.data.WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(sample_weights),
+        replacement=True
+    )
+    return sampler
+
+
 if __name__ == "__main__":
     test_class_weights()
     print()

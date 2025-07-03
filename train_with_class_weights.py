@@ -55,7 +55,8 @@ from utils import (
     get_task_class_weights,
     analyze_class_distribution,
     compute_task_metrics,
-    format_metrics_table
+    format_metrics_table,
+    make_weighted_sampler_from_metrics
 )
 
 
@@ -835,6 +836,14 @@ def main():
     parser.add_argument('--clip-pooling-temperature', type=float, default=1.0,
                         help='Temperature for attention pooling in bag-of-clips mode (default: 1.0)')
     
+    # Dynamic sampler arguments
+    parser.add_argument('--dynamic-sampler', action='store_true', help='Enable dynamic class-balanced sampler that re-weights every epoch based on validation recall.')
+    parser.add_argument('--dynamic-sampler-task', type=str, default='action_class', help='Task to use for dynamic sampler weight calculation (default: action_class).')
+    parser.add_argument('--dynamic-sampler-power', type=float, default=1.0, help='Aggressiveness of dynamic sampler, where weight = (1/recall)^power (default: 1.0).')
+    
+    # Loss and Weighting (Simplified for Stability)
+    parser.add_argument('--loss-type', type=str, default='ce', choices=['ce', 'focal'], help='Primary loss type (default: ce). "focal" is experimental.')
+    
     args = parser.parse_args()
     
     # Parse and validate loss types configuration
@@ -1209,6 +1218,10 @@ def main():
             max_grad_norm=1.0,
             primary_task_weights=primary_task_weights,
             weighting_strategy=args.weighting_strategy,  # New: adaptive weighting strategy
+            dynamic_sampler=args.dynamic_sampler,
+            dynamic_sampler_task=args.dynamic_sampler_task,
+            dynamic_sampler_power=args.dynamic_sampler_power,
+            loss_type=args.loss_type
         )
         
         # Store additional configuration for adaptive weights
@@ -1309,14 +1322,41 @@ def main():
                         'LR': f'{optimizer.param_groups[0]["lr"]:.2e}'
                     })
             
-            # Validation
-            print()  # Add space before validation
-            val_results = trainer.evaluate(
-                trainer.val_loader, 
-                compute_detailed_metrics=True,
-                compute_task_metrics=compute_task_metrics,
-                format_metrics_table=format_metrics_table
-            )
+            # --- Validation Step ---
+            if (epoch + 1) % args.eval_freq == 0:
+                val_results = trainer.evaluate(
+                    val_loader,
+                    max_batches=args.eval_batches,
+                    compute_detailed_metrics=True,
+                    compute_task_metrics=compute_task_metrics,
+                    format_metrics_table=format_metrics_table
+                )
+
+                # --- Dynamic Sampler Update ---
+                if args.dynamic_sampler:
+                    logger.info("🚀 Updating dynamic sampler based on validation metrics...")
+                    new_sampler = make_weighted_sampler_from_metrics(
+                        train_loader.dataset,
+                        val_results.get('task_metrics', {}),
+                        task=args.dynamic_sampler_task,
+                        power=args.dynamic_sampler_power
+                    )
+                    if new_sampler:
+                        # Recreate the DataLoader with the new sampler
+                        current_batch_size = train_loader.batch_size
+                        train_loader = DataLoader(
+                            train_loader.dataset,
+                            batch_size=current_batch_size,
+                            sampler=new_sampler,
+                            shuffle=False,  # Sampler handles shuffling
+                            num_workers=train_loader.num_workers,
+                            pin_memory=True,
+                            drop_last=True,
+                            collate_fn=train_loader.collate_fn
+                        )
+                        # IMPORTANT: Update the trainer's reference to the new loader
+                        trainer.train_loader = train_loader
+                        logger.info(f"   ✅ Dynamic sampler updated for task '{args.dynamic_sampler_task}'. New train loader created.")
             
             # Log metrics
             avg_train_loss = sum(m['total_loss'] for m in train_metrics) / len(train_metrics)
@@ -1325,10 +1365,9 @@ def main():
             print(f"\n📊 Epoch {epoch + 1} Results:")
             print(f"   Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f}")
             
-            # Print detailed metrics if available
+            # Log validation metrics to console
             if 'metrics_table' in val_results:
-                print("\n📋 Validation Metrics:")
-                print(val_results['metrics_table'])
+                logger.info(f"📊 Validation Metrics (Epoch {epoch + 1}):\n{val_results['metrics_table']}")
             
             # Log current backbone status
             if args.freeze_mode == 'gradual':

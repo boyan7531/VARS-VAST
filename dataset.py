@@ -298,10 +298,11 @@ class MVFoulsDataset(Dataset):
             
             # Build dataset index
             self.dataset_index = self._build_dataset_index()
-        
-        # Process annotations to create numeric labels after dataset_index is built
-        if self.load_annotations:
-            self._process_annotations()
+            
+            # Process annotations to create numeric labels and handle tasks
+            if self.load_annotations:
+                self._process_annotations()
+                self.task_order = list(TASKS_INFO.keys())
         
         # Group clips by action for bag-of-clips mode
         if self.bag_of_clips:
@@ -849,17 +850,56 @@ class MVFoulsDataset(Dataset):
         return videos, targets
     
     def get_action_ids(self) -> List[Union[int, str]]:
-        """Get list of all unique action IDs in the dataset."""
-        action_ids = set()
-        for item in self.dataset_index:
-            try:
-                # Try to convert to int for numeric IDs (official MVFouls)
-                action_ids.add(int(item.action_id))
-            except (ValueError, TypeError):
-                # Keep as string for non-numeric IDs (unit tests, custom datasets)
-                action_ids.add(item.action_id)
-        return sorted(list(action_ids))
-    
+        """Returns a list of action IDs in the dataset."""
+        if self.bag_of_clips:
+            # When using bag-of-clips, the index itself is the list of action IDs
+            return self.dataset_index
+        else:
+            # For single clips, extract action_id from each ClipInfo object
+            return [clip.action_id for clip in self.dataset_index]
+
+    def get_labels_for_task(self, task_name: str) -> List[int]:
+        """
+        Get all integer labels for a specific task across the dataset.
+        This is required for building weighted samplers.
+
+        Args:
+            task_name (str): The name of the task (e.g., 'action_class').
+
+        Returns:
+            List[int]: A list of integer labels for the given task,
+                       with one label per dataset item (__len__).
+        """
+        if not self.load_annotations:
+            raise RuntimeError("Cannot get labels when annotations are not loaded.")
+
+        if not hasattr(self, 'task_order') or task_name not in self.task_order:
+            raise ValueError(f"Task '{task_name}' not found in dataset's task order.")
+
+        task_idx = self.task_order.index(task_name)
+        missing_label_idx = LABEL2IDX[task_name].get("Missing/Empty", 0)
+
+        labels = []
+        if self.bag_of_clips:
+            # For bag-of-clips, each item corresponds to an action.
+            # The label is consistent across all clips of an action.
+            for action_id in self.dataset_index:
+                # Get the first clip of the action to find the label
+                first_clip = self.action_groups[action_id][0]
+                if first_clip.numeric_labels is not None:
+                    labels.append(first_clip.numeric_labels[task_idx].item())
+                else:
+                    labels.append(missing_label_idx)
+        else:
+            # For clip-level, each item is a clip.
+            for clip_info in self.dataset_index:
+                if clip_info.numeric_labels is not None:
+                    labels.append(clip_info.numeric_labels[task_idx].item())
+                else:
+                    labels.append(missing_label_idx)
+        
+        return labels
+
     def get_task_statistics(self) -> Dict[str, Dict]:
         """Get statistics for all tasks in the dataset (per unique action, not per clip)."""
         if not self.load_annotations:
