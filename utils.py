@@ -7,6 +7,7 @@ import numpy as np
 from typing import Union, Dict, List, Optional, Tuple
 from collections import Counter, OrderedDict
 import warnings
+from torch.utils.data import Subset  # local import to avoid mandatory dependency at file top
 
 # Import task metadata from dataset
 try:
@@ -926,12 +927,26 @@ def make_weighted_sampler_from_metrics(dataset, metrics, task='action_class',
         class_weights[i] = weight
         print(f"Dynamic sampler: class-{i} weight = {weight:.4f}")
 
-    # Assumes dataset has a 'get_labels_for_task' method
-    try:
-        labels = dataset.get_labels_for_task(task)
-    except (ValueError, RuntimeError) as e:
-        print(f"Warning: Could not get labels for task '{task}'. Sampler not updated. Error: {e}")
-        return None
+    # Retrieve per-sample labels, unwrapping torch.utils.data.Subset if needed
+    if isinstance(dataset, Subset):
+        base_dataset = dataset.dataset
+        indices = list(dataset.indices)
+
+        # Attempt to fetch labels from the underlying MVFoulsDataset
+        try:
+            all_labels = base_dataset.get_labels_for_task(task)
+        except (ValueError, RuntimeError, AttributeError) as e:
+            print(f"Warning: Could not get labels from base dataset for task '{task}'. Sampler not updated. Error: {e}")
+            return None
+
+        # Filter labels for the subset indices (guard against out-of-range indices)
+        labels = [all_labels[i] for i in indices if i < len(all_labels)]
+    else:
+        try:
+            labels = dataset.get_labels_for_task(task)
+        except (ValueError, RuntimeError, AttributeError) as e:
+            print(f"Warning: Could not get labels for task '{task}'. Sampler not updated. Error: {e}")
+            return None
         
     sample_weights = torch.tensor([class_weights[label] for label in labels])
 
