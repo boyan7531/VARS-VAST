@@ -414,6 +414,7 @@ def create_balanced_model(
     loss_types_per_task: Optional[Dict[str, str]] = None,
     use_effective_weights: bool = False,
     freeze_mode: str = 'gradual',
+    head_dropout: float = 0.5,
     **model_kwargs
 ) -> MVFoulsModel:
     """
@@ -496,6 +497,7 @@ def create_balanced_model(
             backbone_arch=backbone_arch,
             backbone_pretrained=True,
             backbone_freeze_mode=freeze_mode,
+            head_dropout=head_dropout,
             loss_types_per_task=loss_types_list,  # Pass the list format expected by model
             class_weights=task_weights,
             task_loss_weights=primary_task_weights,
@@ -723,6 +725,8 @@ def main():
     
     # Model arguments
     parser.add_argument('--multi-task', action='store_true', help='Use multi-task learning')
+    parser.add_argument('--head-dropout', type=float, default=0.5,
+                        help='Dropout probability inside the classification head (default: 0.5)')
     parser.add_argument('--num-classes', type=int, default=2, help='Number of classes (single-task only)')
     
     # Training arguments
@@ -766,6 +770,10 @@ def main():
     # Primary task weighting arguments
     parser.add_argument('--primary-task-weight', type=float, default=3.0,
                         help='Weight multiplier for primary tasks (default: 3.0)')
+    parser.add_argument(
+        '--task-loss-weights',
+        type=str,
+        help='JSON dict of per-task loss weights, e.g. {"severity":5, "offence":3, "action_class":3}')
     parser.add_argument('--auxiliary-task-weight', type=float, default=1.0,
                         help='Weight multiplier for auxiliary tasks (default: 1.0)')
     parser.add_argument('--primary-tasks', nargs='+', default=['action_class', 'severity', 'offence'],
@@ -1008,78 +1016,28 @@ def main():
         # Create balanced model
         logger.info("🏗️ Creating balanced model...")
         
-        # Create task weighting strategy (simplified for Option A)
+        # Smart weighting: build primary_task_weights unless explicit dict provided
         primary_task_weights = {}
-        if args.multi_task:
-            # Get all task names from metadata
-            from utils import get_task_metadata
-            metadata = get_task_metadata()
-            all_tasks = metadata['task_names']
+        if args.task_loss_weights:
+            try:
+                primary_task_weights = json.loads(args.task_loss_weights)
+            except Exception as e:
+                logger.error(f"❌ Could not parse --task-loss-weights: {e}")
+                sys.exit(1)
+        
+        if args.use_smart_weighting and args.multi_task:
+            # Core tasks
+            primary_tasks = args.primary_tasks
+            core_weight = args.core_task_weight
+            support_weight = args.support_task_weight
             
-            # VALIDATION: Ensure we only have the expected 3 tasks
-            expected_tasks = ['action_class', 'severity', 'offence']
-            if set(all_tasks) != set(expected_tasks):
-                logger.error(f"❌ Unexpected tasks found!")
-                logger.error(f"   Expected: {expected_tasks}")
-                logger.error(f"   Found: {all_tasks}")
-                raise ValueError(f"Dataset must contain exactly these 3 tasks: {expected_tasks}")
+            logger.info("🎯 Smart task weighting enabled for 3-task MVFouls:")
+            logger.info(f"   Core tasks: {primary_tasks}")
+            logger.info(f"   Weights - Core: {core_weight}x, Support: {support_weight}x")
             
-            logger.info(f"✅ Validated dataset contains exactly 3 expected tasks: {all_tasks}")
-            
-            if args.use_smart_weighting:
-                # Smart weighting based on semantic relevance for the 3 actual tasks
-                # All tasks are important for foul detection, but with different emphasis
-                
-                # Core detection tasks (what happened and how bad)
-                core_tasks = ['action_class', 'severity']
-                
-                # Decision task (final judgment)
-                decision_tasks = ['offence']
-                
-                logger.info("🎯 Smart task weighting enabled for 3-task MVFouls:")
-                logger.info(f"   Core tasks (action + severity): {core_tasks}")
-                logger.info(f"   Decision task (offence): {decision_tasks}")
-                logger.info(f"   Weights - Core: {args.core_task_weight}x, Support: {args.support_task_weight}x")
-                
-                for task_name in all_tasks:
-                    if task_name in core_tasks:
-                        primary_task_weights[task_name] = args.core_task_weight
-                        logger.info(f"     {task_name}: {args.core_task_weight}x (core)")
-                    elif task_name in decision_tasks:
-                        primary_task_weights[task_name] = args.support_task_weight
-                        logger.info(f"     {task_name}: {args.support_task_weight}x (decision)")
-                    else:
-                        # This shouldn't happen with validation above, but just in case
-                        primary_task_weights[task_name] = args.context_task_weight
-                        logger.warning(f"     {task_name}: {args.context_task_weight}x (unexpected task)")
-            
-            else:
-                # Simple primary/auxiliary weighting
-                logger.info(f"🎯 Setting up primary task weighting for 3-task MVFouls:")
-                logger.info(f"   Primary tasks: {args.primary_tasks} (weight: {args.primary_task_weight}x)")
-                logger.info(f"   Auxiliary tasks: all others (weight: {args.auxiliary_task_weight}x)")
-                
-                for task_name in all_tasks:
-                    if task_name in args.primary_tasks:
-                        primary_task_weights[task_name] = args.primary_task_weight
-                        logger.info(f"     {task_name}: {args.primary_task_weight}x (primary)")
-                    else:
-                        primary_task_weights[task_name] = args.auxiliary_task_weight
-                        logger.info(f"     {task_name}: {args.auxiliary_task_weight}x (auxiliary)")
-            
-            logger.info(f"📊 Final task weights: {primary_task_weights}")
-            logger.info("🎯 Using Option A: WeightedRandomSampler + CrossEntropy")
-            
-            # Add summary of what the model will predict
-            logger.info("🎯 MODEL WILL PREDICT EXACTLY 3 TASKS:")
-            for task_name, num_classes in zip(metadata['task_names'], metadata['num_classes']):
-                logger.info(f"   📋 {task_name}: {num_classes} classes")
-                if task_name == 'action_class':
-                    logger.info(f"      Classes: Standing tackling, Tackling, Challenge, Holding, Elbowing, etc.")
-                elif task_name == 'severity':
-                    logger.info(f"      Classes: Missing, 1, 2, 3, 4, 5") 
-                elif task_name == 'offence':
-                    logger.info(f"      Classes: Missing/Empty, Offence, No offence, Between")
+            for task_name in primary_tasks:
+                primary_task_weights[task_name] = core_weight if task_name in primary_tasks else support_weight
+                logger.info(f"     {task_name}: {primary_task_weights[task_name]}x")
         
         model = create_balanced_model(
             multi_task=args.multi_task,
@@ -1093,7 +1051,8 @@ def main():
             clip_pooling_type=args.clip_pooling_type,
             clip_pooling_temperature=args.clip_pooling_temperature,
             freeze_mode=args.freeze_mode,
-            backbone_arch=args.backbone_arch
+            backbone_arch=args.backbone_arch,
+            head_dropout=args.head_dropout
         )
         
         # ------------------------------------------------------------------
