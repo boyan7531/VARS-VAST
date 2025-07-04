@@ -1429,10 +1429,17 @@ def main():
                 """Return numeric metric based on user-selected key."""
                 if name == 'val_loss':
                     return -results['avg_loss']  # lower val_loss is better, invert sign
-                # Overall metrics
+                # Overall metrics pre-computed
                 if name.startswith('overall_'):
                     key = name.replace('overall_', '')
-                    return results.get('overall_metrics', {}).get(key)
+                    value = results.get('overall_metrics', {}).get(key)
+                    if value is not None:
+                        return value
+                    # Derive overall macro scores on-the-fly if missing
+                    if key in {'macro_f1', 'macro_recall', 'macro_precision'} and 'task_metrics' in results:
+                        vals = [m.get(key) for m in results['task_metrics'].values() if m.get(key) is not None]
+                        if vals:
+                            return float(np.mean(vals))
                 # Per-task metric: <task>_<metric>
                 if '_' in name:
                     task_name, metric_key = name.split('_', 1)
