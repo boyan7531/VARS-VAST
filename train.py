@@ -215,6 +215,10 @@ def validate_epoch(trainer, val_loader, epoch, writer, args):
     logger = logging.getLogger(__name__)
     
     logger.info("Running validation...")
+    # Free unused GPU memory before validation to reduce OOM risk
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
     eval_results = trainer.evaluate(val_loader, compute_detailed_metrics=True)
     
     # Log basic metrics

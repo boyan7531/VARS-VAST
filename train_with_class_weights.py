@@ -1377,6 +1377,10 @@ def main():
             
             # --- Validation Step ---
             if (epoch + 1) % args.eval_freq == 0:
+                # Free unused GPU memory before validation to reduce OOM risk
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
                 val_results = trainer.evaluate(
                     val_loader,
                     max_batches=args.eval_batches,
