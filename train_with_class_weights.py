@@ -440,6 +440,14 @@ def create_balanced_model(
         
         # Prepare task-specific configurations with flexible loss types
         task_weights = {}
+        class_weight_override = {}
+        if args.task_class_weights:
+            try:
+                class_weight_override = json.loads(args.task_class_weights)
+            except Exception as e:
+                logger.error(f"❌ Could not parse --task-class-weights: {e}")
+                sys.exit(1)
+        
         loss_types_list = []
         
         # Default loss configuration if not provided
@@ -456,12 +464,14 @@ def create_balanced_model(
             loss_types_list.append(loss_type)
             
             # Optional: Add class weights (method depends on use_effective_weights flag)
-            if use_class_weights and imbalance_analysis and task_name in imbalance_analysis:
+            if (use_class_weights or task_name in class_weight_override) and imbalance_analysis and task_name in imbalance_analysis:
                 analysis = imbalance_analysis[task_name]
                 class_counts = analysis['class_counts']
                 
                 # Choose weighting method
-                if use_effective_weights:
+                if task_name in class_weight_override:
+                    method = class_weight_override[task_name]
+                elif use_effective_weights:
                     # Use effective number method for extreme imbalance
                     method = 'effective'
                 else:
@@ -774,6 +784,10 @@ def main():
         '--task-loss-weights',
         type=str,
         help='JSON dict of per-task loss weights, e.g. {"severity":5, "offence":3, "action_class":3}')
+    parser.add_argument(
+        '--task-class-weights',
+        type=str,
+        help='JSON dict mapping task names to weighting method (balanced | effective), e.g. {"severity":"balanced"}')
     parser.add_argument('--auxiliary-task-weight', type=float, default=1.0,
                         help='Weight multiplier for auxiliary tasks (default: 1.0)')
     parser.add_argument('--primary-tasks', nargs='+', default=['action_class', 'severity', 'offence'],
@@ -866,6 +880,13 @@ def main():
     # Limit number of batches during validation (useful for smoke tests)
     parser.add_argument('--eval-batches', type=int, default=None,
                         help='Maximum number of batches to run during each validation pass (default: all)')
+    
+    # Checkpoint metric
+    parser.add_argument(
+        '--checkpoint-metric', type=str, default='overall_accuracy',
+        help=('Metric used to decide which validation epoch checkpoint to keep. '
+              'Options: overall_accuracy, overall_macro_f1, overall_macro_recall, val_loss, '
+              'or <task>_<metric> e.g. severity_macro_f1'))
     
     args = parser.parse_args()
     
@@ -1394,8 +1415,29 @@ def main():
                 logger.info(f"🔧 Backbone status: stage {current_stage}, "
                            f"{trainable_params:,} trainable ({trainable_pct:.1f}%)")
             
+            # --------------------------------------------------------------
+            # Determine metric value for checkpointing
+            # --------------------------------------------------------------
+            def extract_metric(results, name):
+                """Return numeric metric based on user-selected key."""
+                if name == 'val_loss':
+                    return -results['avg_loss']  # lower val_loss is better, invert sign
+                # Overall metrics
+                if name.startswith('overall_'):
+                    key = name.replace('overall_', '')
+                    return results.get('overall_metrics', {}).get(key)
+                # Per-task metric: <task>_<metric>
+                if '_' in name:
+                    task_name, metric_key = name.split('_', 1)
+                    return results.get('task_metrics', {}).get(task_name, {}).get(metric_key)
+                return None
+
+            current_metric = extract_metric(val_results, args.checkpoint_metric)
+            if current_metric is None:
+                logger.warning(f"⚠️  Could not find checkpoint metric '{args.checkpoint_metric}'. Falling back to -val_loss")
+                current_metric = -val_loss
+            
             # Save best model
-            current_metric = val_results.get('overall_metrics', {}).get('accuracy', 1.0 - val_loss)
             if current_metric > best_metric:
                 best_metric = current_metric
                 
