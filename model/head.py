@@ -567,6 +567,22 @@ class MVFoulsHead(nn.Module):
             else:
                 x = self._reduce_spatial(x)  # (B, T, C) or (B*N_clips, T, C)
         
+        # ------------------------------------------------------------------
+        # NEW: Handle 4-D feature maps coming from some backbones
+        # ------------------------------------------------------------------
+        if x.dim() == 4:  # Possible shapes: (B, C, H, W) *or* (B, T, N, C)
+            # We interpret the last dimension as the embedding (feature) dimension and
+            # collapse all preceding dims (except batch) into a single token/time axis.
+            # This turns the tensor into the standard (B, T, C) format that the rest
+            # of the head is designed to handle.
+            x = x.flatten(1, -2)  # (B, T, C)
+            # Dynamically align the feature dimension if it differs from the configured in_dim
+            if x.shape[-1] != self.in_dim:
+                if not hasattr(self, '_input_proj') or self._input_proj.in_features != x.shape[-1]:
+                    # Lazily create the projection layer on first mismatch
+                    self._input_proj = nn.Linear(x.shape[-1], self.in_dim).to(x.device)
+                x = self._input_proj(x)
+        
         # Store frame logits before temporal pooling if localizer is enabled
         if self.localizer is not None and x.dim() == 3:
             # x is (B, T, C), need to add spatial dims for conv3d
