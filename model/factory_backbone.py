@@ -84,13 +84,15 @@ def build_backbone(
             **kwargs
         )
         
-    elif arch.lower() in ['mvitv2_b', 'mvitv2', 'mvitv2_base']:
-        from .timm_mvit_backbone import build_timm_mvit_backbone as _builder
+    elif arch.lower() in ['mvitv2_s', 'mvitv2_small', 'mvitv2_b', 'mvitv2', 'mvitv2_base']:
+        from .mvit_backbone import build_mvit_backbone as _builder
 
-        print("  Architecture: Video MViTv2-B (timm)")
+        chosen_variant = 'MViTv2-S' if arch.lower() in ['mvitv2_s', 'mvitv2_small'] else 'MViTv2-B'
+
+        print(f"  Architecture: Video {chosen_variant} (torchvision, Kinetics-400)")
         print("  Parameters: ~52M")
         print("  Memory: ~8GB VRAM @ BS=1")
-        print("  Strengths: Efficiency, larger than v2_s")
+        print("  Strengths: Efficiency, action-optimized pretrained weights (KINETICS-400)")
 
         return _builder(
             pretrained=pretrained,

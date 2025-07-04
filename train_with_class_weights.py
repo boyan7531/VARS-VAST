@@ -734,8 +734,8 @@ def main():
     
     # Backbone architecture
     parser.add_argument('--backbone-arch', type=str, default='swin',
-                        choices=['swin', 'mvit', 'mvitv2_b', 'mvitv2', 'mvitv2_base', 'mvit_v1_b'],
-                        help='Backbone architecture (swin, mvit, or timm MViT variants)')
+                        choices=['swin', 'mvit', 'mvitv2_s', 'mvitv2_small', 'mvitv2_b', 'mvitv2', 'mvitv2_base', 'mvit_v1_b'],
+                        help='Backbone architecture (swin, mvit, mvitv2_s, or other MViT variants)')
     
     # Balance-specific arguments (Option A: WeightedRandomSampler + CrossEntropy)
     parser.add_argument('--analyze-only', action='store_true', help='Only analyze imbalance, dont train')

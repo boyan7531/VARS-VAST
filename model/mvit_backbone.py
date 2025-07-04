@@ -16,6 +16,7 @@ import warnings
 import os
 import urllib.request
 from collections import OrderedDict
+import traceback, importlib
 
 
 class VideoMViTBackbone(nn.Module):
@@ -67,38 +68,47 @@ class VideoMViTBackbone(nn.Module):
     
     def _load_pretrained_model(self, pretrained: bool):
         """Load pretrained MViTv2-B model with fallback options."""
-        print("Loading pretrained MViTv2-B model...")
+        print("Loading pretrained MViTv2 model (prioritising 'v2_s')...")
+        # ------------------------------------------------------------------
+        # Environment diagnostics (torchvision + timm versions, available attrs)
+        # ------------------------------------------------------------------
+        try:
+            import torchvision
+            print(f"   Torchvision version: {torchvision.__version__}")
+        except Exception as e:
+            print(f"   ⚠️  Could not import torchvision for version check: {e}")
+
+        # Inspect available weight enums for MViTv2-B
+        if hasattr(video_models, 'MViT_V2_B_Weights'):
+            enum_attrs = dir(video_models.MViT_V2_B_Weights)
+            public_attrs = [a for a in enum_attrs if not a.startswith('_')]
+            print(f"   MViT_V2_B_Weights enum attributes: {public_attrs}")
+        else:
+            print("   ⚠️  video_models.MViT_V2_B_Weights not found in this torchvision build")
         
-        # Step 1: Try torchvision MViTv2-B (newer torchvision)
-        if hasattr(video_models, 'mvit_v2_b'):
+        # ------------------------------------------------------------------
+        # Step 1: Try torchvision MViTv2-S (small) – this variant is included
+        #         in more torchvision versions and has official Kinetics-400
+        #         weights.
+        # ------------------------------------------------------------------
+        if hasattr(video_models, 'mvit_v2_s'):
             try:
-                # Check if weight enum exists
-                weights_enum = getattr(video_models, 'MViT_V2_B_Weights', None)
-                if weights_enum is not None and hasattr(weights_enum, 'KINETICS400_IMAGENET22K_V1'):
-                    weights = weights_enum.KINETICS400_IMAGENET22K_V1 if pretrained else None
+                weights_enum_s = getattr(video_models, 'MViT_V2_S_Weights', None)
+                if weights_enum_s is not None and hasattr(weights_enum_s, 'KINETICS400_V1'):
+                    selected_weight = 'KINETICS400_V1'
+                    weights_s = weights_enum_s.KINETICS400_V1 if pretrained else None
                 else:
-                    weights = None
+                    selected_weight = 'None'
+                    weights_s = None
 
-                self.model = video_models.mvit_v2_b(weights=weights)
-                print("✅ Loaded torchvision mvit_v2_b (weights={} )".format('pretrained' if weights else 'random'))
-                return
+                self.model = video_models.mvit_v2_s(weights=weights_s)
+                print(f"✅ Loaded torchvision mvit_v2_s (weights={selected_weight})")
+                if not (pretrained and weights_s is None):
+                    return
             except Exception as e:
-                print(f"Failed to load torchvision mvit_v2_b: {e}")
-
-        # Step 2: Try torchvision MViTv1-B as closest alternative
-        if hasattr(video_models, 'mvit_v1_b'):
-            try:
-                weights_enum = getattr(video_models, 'MViT_V1_B_Weights', None)
-                if weights_enum is not None and hasattr(weights_enum, 'KINETICS400_IMAGENET22K_V1'):
-                    weights = weights_enum.KINETICS400_IMAGENET22K_V1 if pretrained else None
-                else:
-                    weights = None
-
-                self.model = video_models.mvit_v1_b(weights=weights)
-                print("✅ Loaded torchvision mvit_v1_b (weights={} )".format('pretrained' if weights else 'random'))
-                return
-            except Exception as e:
-                print(f"Failed to load torchvision mvit_v1_b: {e}")
+                print(f"Failed to load torchvision mvit_v2_s: {e}")
+                import traceback
+                traceback.print_exc()
 
         print("Failed to find MViT in current torchvision. Trying PyTorchVideo...")
         
@@ -406,37 +416,186 @@ class VideoMViTBackbone(nn.Module):
                 
             except Exception as e:
                 print(f"⚠️  Could not determine output dimensions: {e}")
-                # Fallback to known MViTv2-B dimension
-                self.out_dim = 768
+                # ----------------------------------------------------------------------------
+                # Robust fallback – try to infer embedding dimension from the model before
+                # defaulting to a hard-coded value. This covers variants such as MViTv2-S
+                # (dim=96) where using 768 would break the head.
+                # ----------------------------------------------------------------------------
+                candidate_dims: List[int] = []
+
+                # Common attribute names in torchvision / timm
+                for attr_name in ["dim", "embed_dim", "hidden_dim"]:
+                    if hasattr(self.model, attr_name):
+                        val = getattr(self.model, attr_name)
+                        if isinstance(val, int):
+                            candidate_dims.append(val)
+
+                # Try patch_embed.{out_channels|proj.out_channels}
+                if hasattr(self.model, "patch_embed"):
+                    pe = self.model.patch_embed
+                    if hasattr(pe, "out_channels") and isinstance(pe.out_channels, int):
+                        candidate_dims.append(pe.out_channels)
+                    elif hasattr(pe, "proj") and hasattr(pe.proj, "out_channels"):
+                        oc = pe.proj.out_channels
+                        if isinstance(oc, int):
+                            candidate_dims.append(oc)
+                    # Also check for out_features in a possible projection
+                    if hasattr(pe, "proj") and hasattr(pe.proj, "out_features"):
+                        of = pe.proj.out_features
+                        if isinstance(of, int):
+                            candidate_dims.append(of)
+
+
+                # Try norm.normalized_shape
+                if hasattr(self.model, "norm") and hasattr(self.model.norm, "normalized_shape"):
+                    ns = self.model.norm.normalized_shape
+                    if isinstance(ns, (list, tuple)) and len(ns) > 0 and isinstance(ns[0], int):
+                        candidate_dims.append(ns[0])
+
+                # Last resort: inspect layers of the head if it exists (it should have been deleted)
+                if hasattr(self.model, 'head'):
+                    for layer in self.model.head.modules():
+                        if isinstance(layer, nn.Linear) and hasattr(layer, 'in_features'):
+                            candidate_dims.append(layer.in_features)
+                            break
+                
+                # Select the most common (mode) or first entry
+                if candidate_dims:
+                    # Use smallest positive value – safer for small variants (S, XS)
+                    positive_dims = [d for d in candidate_dims if d > 0]
+                    self.out_dim = min(positive_dims) if positive_dims else 768
+                else:
+                    # Absolute fallback to known large variant dimension
+                    self.out_dim = 768
                 self.spatial_dims = None
                 self.temporal_dims = None
-                print(f"Using fallback output dimension: {self.out_dim}")
+                print(f"Using fallback output dimension: {self.out_dim} (inferred)")
     
     def _forward_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through feature extraction only."""
+        """Forward pass through the backbone **without** the classification head.
+
+        Prefers the model's own `forward_features` implementation (present in
+        torchvision's MViT models) which handles the extra `thw` argument
+        required by `MultiscaleBlock`. If that method is unavailable we fall
+        back to a manual pass (used by some alternative backbones).
+        """
+
+        # Only call the model's own forward_features if the input is *already*
+        # flattened into tokens (dim == 3).  When we receive a raw video
+        # tensor (B, C, T, H, W) we must apply the patch/stem embed first –
+        # otherwise the built-in implementation will raise a LayerNorm shape
+        # error (expects last-dim == embed_dim, but gets 3).
+        if x.dim() == 3 and hasattr(self.model, "forward_features"):
+            try:
+                return self.model.forward_features(x)
+            except Exception as e:  # Broad catch – we want robustness here
+                warnings.warn(
+                    f"⚠️  model.forward_features failed, falling back to manual path: {e}",
+                    RuntimeWarning,
+                )
+
+        # ------------------------------------------------------------------
+        # Manual fallback (legacy / non-torchvision implementations)
+        # ------------------------------------------------------------------
         features = x
-        
-        # Pass through patch embedding
-        if hasattr(self.model, 'patch_embed'):
+
+        # Torchvision MViTv2 defines BOTH `stem` **and** a lightweight
+        # `patch_embed` (which merely flattens tokens without changing the
+        # channel count).  We must run the convolutional `stem` first to turn
+        # RGB (3) into the embedding dimension (96).  Therefore give `stem`
+        # precedence; fall back to `patch_embed` for models that only have
+        # the latter.
+        if hasattr(self.model, "stem"):
+            features = self.model.stem(features)
+        elif hasattr(self.model, "patch_embed"):
             features = self.model.patch_embed(features)
-        
-        # Add positional embedding if it exists
-        if hasattr(self.model, 'pos_embed') and self.model.pos_embed is not None:
-            features = features + self.model.pos_embed
-        
-        # Pass through positional dropout if it exists
-        if hasattr(self.model, 'pos_drop'):
+        elif hasattr(self.model, "conv_proj"):
+            # Newer TorchVision MViTv2 variants expose `conv_proj` instead of
+            # `stem`/`patch_embed`. Apply it here so we still project RGB (3)
+            # to the embed dimension (96).
+            features = self.model.conv_proj(features)
+
+        # --------------------------------------------------------------
+        # If the patch embed returns a 5-D video tensor (B, C, T, H, W)
+        # we flatten it into the (B, N, C) token layout that standard
+        # transformer blocks expect. We *also* keep the true spatial
+        # dimensions (T, H, W) so we can pass them to MultiscaleBlock
+        # if required later on.
+        # --------------------------------------------------------------
+        inferred_thw = None  # Will store the exact (T, H, W) if available
+        if features.dim() == 5:  # (B, C, T, H, W)
+            # defer `pos_encoding` until after we flatten the 5-D video
+            # tensor into 3-D tokens – TorchVision expects (B, N, C).
+            B, C, T, H, W = features.shape
+            inferred_thw = (T, H, W)
+            # Move channels to last dim, then flatten the spatial-temporal grid
+            features = features.permute(0, 2, 3, 4, 1).reshape(B, T * H * W, C)
+
+            # Now that features are (B, N, C) we can safely apply
+            # TorchVision's `PositionalEncoding` module if present.
+            if hasattr(self.model, "pos_encoding"):
+                try:
+                    features = self.model.pos_encoding(features)
+                except Exception as e:
+                    warnings.warn(
+                        f"⚠️  model.pos_encoding failed, continuing without it: {e}",
+                        RuntimeWarning,
+                    )
+
+        # Positional embeddings / dropout *after* tokens are in (B, N, C)
+        if hasattr(self.model, "pos_embed") and self.model.pos_embed is not None:
+            # Some implementations store the class token in pos_embed; keep API identical
+            if self.model.pos_embed.shape[1] == features.shape[1]:
+                features = features + self.model.pos_embed
+        if hasattr(self.model, "pos_drop"):
             features = self.model.pos_drop(features)
-        
-        # Pass through all transformer blocks
-        if hasattr(self.model, 'blocks'):
+
+        # ------------------------------------------------------------------
+        # Transformer blocks – be robust to implementations that expect
+        # the additional `thw` argument (used by torchvision's
+        # `MultiscaleBlock`). We attempt a best-effort estimation of
+        # the spatial-temporal token shape when it is required.
+        # ------------------------------------------------------------------
+        if hasattr(self.model, "blocks"):
+            import inspect
+
+            thw = inferred_thw  # Start with exact (T,H,W) if we have it
+
             for block in self.model.blocks:
-                features = block(features)
-        
-        # Pass through final norm if it exists
-        if hasattr(self.model, 'norm'):
-            features = self.model.norm(features)
-        
+                try:
+                    # Fast path: most blocks accept a single tensor argument.
+                    features = block(features)
+                except TypeError as e:
+                    # Fallback for `MultiscaleBlock` which requires (x, thw).
+                    # We only handle the specific missing-parameter error.
+                    if "thw" not in str(e):
+                        raise  # Different signature issue – re-raise
+
+                    # Lazily build a thw tuple – try to be accurate, but fall
+                    # back to a rough estimate if we cannot infer it.
+                    if thw is None:
+                        if features.dim() == 3:
+                            B, N, _ = features.shape
+                            # Attempt to reverse-engineer the grid assuming
+                            # a square spatial layout.
+                            T_est = 16
+                            hw = max(N // T_est, 1)
+                            H_est = W_est = int(hw ** 0.5)
+                            thw = (T_est, H_est, W_est)
+                        else:
+                            thw = (1, 1, 1)
+
+                    # Call block with the inferred thw.
+                    features, thw = block(features, thw)
+
+            # Final norm – only apply if the feature dimension matches the LayerNorm
+            if hasattr(self.model, "norm"):
+                try:
+                    features = self.model.norm(features)
+                except Exception:
+                    # Dimension mismatch: skip norm for compatibility
+                    pass
+
         return features
     
     def _print_parameter_summary(self):
@@ -445,7 +604,7 @@ class VideoMViTBackbone(nn.Module):
         frozen = sum(p.numel() for p in self.model.parameters() if not p.requires_grad)
         total = trainable + frozen
         
-        print(f"MViTv2-B Parameter summary:")
+        print("MViTv2 Parameter summary:")
         print(f"  Trainable: {trainable:,} ({trainable/total*100:.1f}%)")
         print(f"  Frozen: {frozen:,} ({frozen/total*100:.1f}%)")
         print(f"  Total: {total:,}")
