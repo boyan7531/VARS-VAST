@@ -415,6 +415,7 @@ def create_balanced_model(
     use_effective_weights: bool = False,
     freeze_mode: str = 'gradual',
     head_dropout: float = 0.5,
+    task_class_weight_methods: Optional[Dict[str, str]] = None,
     **model_kwargs
 ) -> MVFoulsModel:
     """
@@ -440,13 +441,8 @@ def create_balanced_model(
         
         # Prepare task-specific configurations with flexible loss types
         task_weights = {}
-        class_weight_override = {}
-        if args.task_class_weights:
-            try:
-                class_weight_override = json.loads(args.task_class_weights)
-            except Exception as e:
-                logger.error(f"❌ Could not parse --task-class-weights: {e}")
-                sys.exit(1)
+        # Use per-task overrides passed in from the caller (already parsed)
+        class_weight_override = task_class_weight_methods or {}
         
         loss_types_list = []
         
@@ -513,7 +509,8 @@ def create_balanced_model(
             task_loss_weights=primary_task_weights,
             backbone_checkpointing=backbone_checkpointing,
             clip_pooling_type=model_kwargs.get('clip_pooling_type', 'mean'),
-            clip_pooling_temperature=model_kwargs.get('clip_pooling_temperature', 1.0)
+            clip_pooling_temperature=model_kwargs.get('clip_pooling_temperature', 1.0),
+            task_class_weight_methods=class_weight_override
         )
         
         # Add summary of what the model will predict
@@ -1060,6 +1057,15 @@ def main():
                 primary_task_weights[task_name] = core_weight if task_name in primary_tasks else support_weight
                 logger.info(f"     {task_name}: {primary_task_weights[task_name]}x")
         
+        # Parse per-task class weight overrides from CLI, if any
+        class_weight_override = {}
+        if args.task_class_weights:
+            try:
+                class_weight_override = json.loads(args.task_class_weights)
+            except Exception as e:
+                logger.error(f"❌ Could not parse --task-class-weights: {e}")
+                sys.exit(1)
+        
         model = create_balanced_model(
             multi_task=args.multi_task,
             imbalance_analysis=imbalance_analysis,
@@ -1073,7 +1079,8 @@ def main():
             clip_pooling_temperature=args.clip_pooling_temperature,
             freeze_mode=args.freeze_mode,
             backbone_arch=args.backbone_arch,
-            head_dropout=args.head_dropout
+            head_dropout=args.head_dropout,
+            task_class_weight_methods=class_weight_override
         )
         
         # ------------------------------------------------------------------
