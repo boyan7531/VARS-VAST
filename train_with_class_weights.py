@@ -235,8 +235,9 @@ def apply_adaptive_lr_scaling(optimizer, group_name: str, trainable_params: int,
         args: Arguments containing scaling factors
         logger: Logger instance
     """
-    # Get current learning rate
-    current_lr = optimizer.param_groups[0]['lr']
+    # Get current backbone learning rate (first group may be the head)
+    backbone_group = next((g for g in optimizer.param_groups if g.get('name', '').lower().startswith('backbone')), optimizer.param_groups[0])
+    current_lr = backbone_group['lr']
     original_lr = current_lr
     
     # NOTE: The CLI arguments --lr-scale-minor, --lr-scale-major, --lr-scale-massive
@@ -736,7 +737,7 @@ def main():
     # Training arguments
     parser.add_argument('--epochs', type=int, default=20, help='Number of epochs')
     parser.add_argument('--batch-size', type=int, default=8, help='Batch size')
-    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
+    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate (default for all params)')
     parser.add_argument('--weight-decay', type=float, default=1e-4, help='Weight decay')
     parser.add_argument('--freeze-mode', type=str, default='gradual', help='Backbone freeze mode')
     
@@ -882,7 +883,24 @@ def main():
               'Options: overall_accuracy, overall_macro_f1, overall_macro_recall, val_loss, '
               'or <task>_<metric> e.g. severity_macro_f1'))
     
+    # NEW: allow different learning rates for head and backbone parameter
+    # groups.  If not provided they fall back to --lr so existing scripts
+    # continue to run unchanged.
+    parser.add_argument('--head-lr', type=float, default=None,
+                        help='Learning rate for the classification head (defaults to --lr).')
+    parser.add_argument('--backbone-lr', type=float, default=None,
+                        help='Learning rate for the backbone (defaults to --lr).')
+    
     args = parser.parse_args()
+    
+    # ------------------------------------------------------------------ #
+    # Fill in defaults for head / backbone LR so downstream code can rely
+    # on args.head_lr / args.backbone_lr always being floats.
+    # ------------------------------------------------------------------ #
+    if args.head_lr is None:
+        args.head_lr = args.lr
+    if args.backbone_lr is None:
+        args.backbone_lr = args.lr
     
     # Parse and validate loss types configuration
     loss_types_per_task = {}
@@ -1210,16 +1228,17 @@ def main():
         backbone_params = list(model.backbone.parameters())
         head_params = list(model.head.parameters())
         
+        # Use potentially different learning rates for head vs. backbone
         param_groups = [
             {
                 'params': head_params,
-                'lr': args.lr,
+                'lr': args.head_lr,
                 'weight_decay': args.weight_decay,
                 'name': 'head'
             },
             {
                 'params': backbone_params,
-                'lr': args.lr,
+                'lr': args.backbone_lr,
                 'weight_decay': args.weight_decay,
                 'name': 'backbone'
             }
@@ -1296,10 +1315,7 @@ def main():
         # Log adaptive learning rate configuration
         if args.adaptive_lr:
             logger.info("🔧 Adaptive learning rate scaling enabled:")
-            logger.info(f"   Base LR: {args.lr:.2e}")
-            logger.info(f"   Minor unfreezing scale: {args.lr_scale_minor}x")
-            logger.info(f"   Major unfreezing scale: {args.lr_scale_major}x")
-            logger.info(f"   Massive unfreezing scale: {args.lr_scale_massive}x")
+            logger.info(f"   Base LRs - Head: {args.head_lr:.2e} | Backbone: {args.backbone_lr:.2e}")
         else:
             logger.info("⚠️  Adaptive learning rate scaling disabled (use --adaptive-lr to enable)")
         
