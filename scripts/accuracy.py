@@ -59,13 +59,21 @@ def load_model(ckpt_path: Path, device: torch.device) -> MVFoulsModel:
     ckpt = torch.load(str(ckpt_path), map_location=device)
     cfg = ckpt.get("config", {}).get("model_config", {})
     
+    # Extract key parameters and avoid conflicts
+    backbone_arch = cfg.get("backbone_arch", "mvitv2_s")
+    
+    # Create clean config without conflicting keys
+    clean_cfg = {k: v for k, v in cfg.items() if k not in [
+        'backbone_arch', 'backbone_pretrained', 'backbone_freeze_mode', 'backbone_checkpointing'
+    ]}
+    
     # Build model with same architecture as training
     model = build_multi_task_model(
-        backbone_arch=cfg.get("backbone_arch", "mvitv2_s"),
+        backbone_arch=backbone_arch,
         backbone_pretrained=False,  # Don't load pretrained weights
         backbone_freeze_mode="none",  # No freezing for inference
         backbone_checkpointing=False,  # Disable for inference
-        **cfg
+        **clean_cfg
     )
     
     # Load trained weights
