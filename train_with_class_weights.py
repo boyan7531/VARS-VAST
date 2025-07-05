@@ -891,6 +891,14 @@ def main():
     parser.add_argument('--backbone-lr', type=float, default=None,
                         help='Learning rate for the backbone (defaults to --lr).')
     
+    # Early stopping arguments
+    parser.add_argument('--early-stopping', action='store_true',
+                        help='Enable early stopping based on validation metric')
+    parser.add_argument('--early-stopping-patience', type=int, default=6,
+                        help='Number of epochs without improvement before stopping (default: 6)')
+    parser.add_argument('--early-stopping-min-delta', type=float, default=0.001,
+                        help='Minimum change in metric to qualify as improvement (default: 0.001)')
+    
     args = parser.parse_args()
     
     # ------------------------------------------------------------------ #
@@ -987,8 +995,12 @@ def main():
     logger.info(f"Target tasks: action_class, severity")
     
     try:
-        # Create transforms
-        transforms = get_video_transforms(image_size=224, augment_train=True)
+        # Create transforms with stronger augmentation
+        from transforms import get_strong_train_transforms, get_val_transforms
+        transforms = {
+            'train': get_strong_train_transforms(size=224),
+            'val': get_val_transforms(size=224)
+        }
         
         # Create datasets
         logger.info("📂 Creating datasets...")
@@ -1327,6 +1339,10 @@ def main():
         
         best_metric = 0.0
         
+        # Early stopping variables
+        early_stopping_counter = 0
+        early_stopping_triggered = False
+        
         for epoch in range(args.epochs):
             print(f"\n{'='*80}")
             logger.info(f"📅 Epoch {epoch + 1}/{args.epochs}")
@@ -1461,9 +1477,12 @@ def main():
                 logger.warning(f"⚠️  Could not find checkpoint metric '{args.checkpoint_metric}'. Falling back to -val_loss")
                 current_metric = -val_loss
             
-            # Save best model
-            if current_metric > best_metric:
+            # Save best model and check early stopping
+            improvement = current_metric - best_metric
+            if improvement > args.early_stopping_min_delta:
+                # Significant improvement found
                 best_metric = current_metric
+                early_stopping_counter = 0  # Reset counter
                 
                 checkpoint = {
                     'epoch': epoch + 1,
@@ -1484,9 +1503,24 @@ def main():
                 latest_path = output_dir / 'best_model_latest.pth'
                 torch.save(checkpoint, latest_path)
                 
-                logger.info(f"💾 New best model saved! Metric: {best_metric:.4f}")
+                logger.info(f"💾 New best model saved! Metric: {best_metric:.4f} (+{improvement:.4f})")
                 logger.info(f"   Saved as: {model_filename}")
                 logger.info(f"   Also saved as: best_model_latest.pth")
+                
+                if args.early_stopping:
+                    logger.info(f"🔄 Early stopping counter reset (improvement: +{improvement:.4f})")
+            else:
+                # No significant improvement
+                if args.early_stopping:
+                    early_stopping_counter += 1
+                    logger.info(f"⏳ No improvement for {early_stopping_counter}/{args.early_stopping_patience} epochs "
+                               f"(current: {current_metric:.4f}, best: {best_metric:.4f})")
+                    
+                    if early_stopping_counter >= args.early_stopping_patience:
+                        logger.info(f"🛑 Early stopping triggered! No improvement for {args.early_stopping_patience} epochs.")
+                        logger.info(f"   Best metric: {best_metric:.4f} at epoch {epoch + 1 - early_stopping_counter}")
+                        early_stopping_triggered = True
+                        break
             
             # Step scheduler
             if scheduler:
@@ -1506,7 +1540,13 @@ def main():
                 writer.add_scalar('Backbone/TrainableParams', trainable_params, epoch)
         
         writer.close()
-        logger.info("🎉 Training completed successfully!")
+        
+        # Final status logging
+        if early_stopping_triggered:
+            logger.info(f"🎉 Training completed via early stopping after {epoch + 1} epochs!")
+            logger.info(f"   Final best metric: {best_metric:.4f}")
+        else:
+            logger.info("🎉 Training completed successfully!")
         
         # Final backbone status
         if args.freeze_mode == 'gradual':
@@ -1516,6 +1556,15 @@ def main():
             logger.info(f"🏁 Final backbone status: stage {final_stage}, "
                        f"{final_trainable:,}/{final_total:,} trainable "
                        f"({final_trainable/final_total*100:.1f}%)")
+        
+        # Early stopping summary
+        if args.early_stopping:
+            if early_stopping_triggered:
+                logger.info(f"📊 Early stopping summary: stopped at epoch {epoch + 1}/{args.epochs}")
+            else:
+                logger.info(f"📊 Early stopping summary: completed full training ({args.epochs} epochs)")
+            logger.info(f"   Patience: {args.early_stopping_patience} epochs")
+            logger.info(f"   Min delta: {args.early_stopping_min_delta:.4f}")
         
     except Exception as e:
         logger.error(f"💥 Training failed: {e}")
