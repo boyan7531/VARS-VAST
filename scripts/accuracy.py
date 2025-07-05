@@ -63,9 +63,12 @@ def load_model(ckpt_path: Path, device: torch.device) -> MVFoulsModel:
     backbone_arch = cfg.get("backbone_arch", "mvitv2_s")
     
     # Create clean config without conflicting keys
-    clean_cfg = {k: v for k, v in cfg.items() if k not in [
-        'backbone_arch', 'backbone_pretrained', 'backbone_freeze_mode', 'backbone_checkpointing'
-    ]}
+    # These parameters are explicitly set by build_multi_task_model
+    conflicting_keys = [
+        'backbone_arch', 'backbone_pretrained', 'backbone_freeze_mode', 'backbone_checkpointing',
+        'multi_task',  # This is always True for build_multi_task_model
+    ]
+    clean_cfg = {k: v for k, v in cfg.items() if k not in conflicting_keys}
     
     # Build model with same architecture as training
     model = build_multi_task_model(
