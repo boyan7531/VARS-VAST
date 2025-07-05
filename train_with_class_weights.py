@@ -909,6 +909,10 @@ def main():
         args.head_lr = args.lr
     if args.backbone_lr is None:
         args.backbone_lr = args.lr
+        
+    # Use the specified learning rates
+    head_lr = args.head_lr
+    backbone_lr = args.backbone_lr
     
     # Parse and validate loss types configuration
     loss_types_per_task = {}
