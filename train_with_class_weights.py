@@ -219,6 +219,13 @@ def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule:
                 args=args,
                 logger=logger
             )
+        
+        # Apply conservative LR reduction after stage-1 opens for stability
+        if new_stage == 2 and optimizer is not None and not hasattr(args, '_lr_reduced_stage1'):
+            for param_group in optimizer.param_groups:
+                param_group['lr'] *= 0.7  # 30% reduction for stability
+            args._lr_reduced_stage1 = True
+            logger.info(f"🔧 Applied 30% LR reduction after stage-1 unfreeze for training stability")
 
 
 def apply_adaptive_lr_scaling(optimizer, group_name: str, trainable_params: int, current_stage: int, new_stage: int, args, logger):
@@ -891,6 +898,10 @@ def main():
     parser.add_argument('--backbone-lr', type=float, default=None,
                         help='Learning rate for the backbone (defaults to --lr).')
     
+    # Backbone gradient checkpointing for memory efficiency
+    parser.add_argument('--backbone-checkpointing', action='store_true',
+                        help='Enable torch.utils.checkpoint on backbone blocks to cut VRAM ~40%')
+    
     # Early stopping arguments
     parser.add_argument('--early-stopping', action='store_true',
                         help='Enable early stopping based on validation metric')
@@ -1063,7 +1074,8 @@ def main():
         logger.info("🏗️ Creating balanced model...")
         
         # Smart weighting: build primary_task_weights unless explicit dict provided
-        primary_task_weights = {}
+        # Set default equal task weights for stability, user can override
+        primary_task_weights = {"severity": 1, "action_class": 1}
         if args.task_loss_weights:
             try:
                 primary_task_weights = json.loads(args.task_loss_weights)
@@ -1098,7 +1110,7 @@ def main():
             multi_task=args.multi_task,
             imbalance_analysis=imbalance_analysis,
             primary_task_weights=primary_task_weights,
-            backbone_checkpointing=False,  # Disable gradient checkpointing due to TIMM 1.0.16 compatibility issues
+            backbone_checkpointing=args.backbone_checkpointing,  # Enable/disable gradient checkpointing based on CLI flag
             use_class_weights=not args.disable_class_weights,  # Use simple inverse frequency class weights
             class_weight_cap=args.class_weight_cap,
             loss_types_per_task=loss_types_per_task,  # New: per-task loss configuration
