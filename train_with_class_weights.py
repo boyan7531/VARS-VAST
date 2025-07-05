@@ -429,15 +429,15 @@ def create_balanced_model(
         metadata = get_task_metadata()
         task_names = metadata['task_names']
         
-        # VALIDATION: Ensure we only have the expected 3 tasks
-        expected_tasks = ['action_class', 'severity', 'offence']
+        # VALIDATION: Ensure we only have the expected 2 tasks (action_class, severity)
+        expected_tasks = ['action_class', 'severity']
         if set(task_names) != set(expected_tasks):
             logger.error(f"❌ Unexpected tasks found!")
             logger.error(f"   Expected: {expected_tasks}")
             logger.error(f"   Found: {task_names}")
-            raise ValueError(f"Dataset must contain exactly these 3 tasks: {expected_tasks}")
+            raise ValueError(f"Dataset must contain exactly these 2 tasks: {expected_tasks}")
         
-        logger.info(f"✅ Validated dataset contains exactly 3 expected tasks: {task_names}")
+        logger.info(f"✅ Validated dataset contains expected tasks: {task_names}")
         
         # Prepare task-specific configurations with flexible loss types
         task_weights = {}
@@ -450,8 +450,7 @@ def create_balanced_model(
         if loss_types_per_task is None:
             loss_types_per_task = {
                 'action_class': 'ce', 
-                'severity': 'focal', 
-                'offence': 'ce'
+                'severity': 'focal'
             }
         
         for task_name in task_names:
@@ -514,15 +513,13 @@ def create_balanced_model(
         )
         
         # Add summary of what the model will predict
-        logger.info("🎯 MODEL WILL PREDICT EXACTLY 3 TASKS:")
+        logger.info("🎯 MODEL WILL PREDICT EXACTLY 2 TASKS:")
         for task_name, num_classes in zip(metadata['task_names'], metadata['num_classes']):
             logger.info(f"   📋 {task_name}: {num_classes} classes")
             if task_name == 'action_class':
                 logger.info(f"      Classes: Standing tackling, Tackling, Challenge, Holding, Elbowing, etc.")
             elif task_name == 'severity':
                 logger.info(f"      Classes: Missing, 1, 2, 3, 4, 5") 
-            elif task_name == 'offence':
-                logger.info(f"      Classes: Missing/Empty, Offence, No offence, Between")
         
     else:
         # Single-task model with simple class weights
@@ -787,8 +784,8 @@ def main():
         help='JSON dict mapping task names to weighting method (balanced | effective), e.g. {"severity":"balanced"}')
     parser.add_argument('--auxiliary-task-weight', type=float, default=1.0,
                         help='Weight multiplier for auxiliary tasks (default: 1.0)')
-    parser.add_argument('--primary-tasks', nargs='+', default=['action_class', 'severity', 'offence'],
-                        help='List of primary task names - MVFouls has exactly 3 tasks: action_class, severity, offence (default: all 3)')
+    parser.add_argument('--primary-tasks', nargs='+', default=['action_class', 'severity'],
+                        help='List of primary task names - MVFouls has exactly 2 tasks: action_class, severity (default: all 2)')
     
     # Adaptive learning rate arguments
     parser.add_argument('--adaptive-lr', action='store_true',
@@ -907,12 +904,11 @@ def main():
         # Default configuration: CE for action_class and offence, focal for severity
         loss_types_per_task = {
             'action_class': 'ce', 
-            'severity': 'focal', 
-            'offence': 'ce'
+            'severity': 'focal'
         }
     
-    # Validate that only the 3 MVFouls tasks are specified
-    valid_tasks = ['action_class', 'severity', 'offence']
+    # Validate that only the 2 MVFouls tasks are specified
+    valid_tasks = ['action_class', 'severity']
     
     # Validate loss types tasks
     invalid_tasks = [task for task in loss_types_per_task.keys() if task not in valid_tasks]
@@ -920,7 +916,7 @@ def main():
         raise ValueError(f"Invalid tasks in --loss-types: {invalid_tasks}. "
                         f"Valid tasks are: {valid_tasks}")
     
-    # Ensure all 3 tasks are covered
+    # Ensure all 2 tasks are covered
     missing_tasks = [task for task in valid_tasks if task not in loss_types_per_task]
     if missing_tasks:
         # Fill missing tasks with default 'ce'
@@ -958,21 +954,19 @@ def main():
     
     # Print clear summary of what this training will do
     print("\n" + "="*80)
-    print("🚀 MVFOULS 3-TASK MULTI-TASK TRAINING")
+    print("🚀 MVFOULS 2-TASK MULTI-TASK TRAINING")
     print("="*80)
-    print("📋 This model will predict EXACTLY 3 tasks:")
+    print("📋 This model will predict EXACTLY 2 tasks:")
     print("   1️⃣  action_class (10 classes): What type of action occurred")
     print("       • Standing tackling, Tackling, Challenge, Holding, Elbowing, etc.")
     print("   2️⃣  severity (6 classes): How severe was the action")  
     print("       • Missing, 1, 2, 3, 4, 5")
-    print("   3️⃣  offence (4 classes): Final judgment on the action")
-    print("       • Missing/Empty, Offence, No offence, Between")
     print("="*80)
     
     logger.info(f"🚀 Starting balanced MVFouls training")
     logger.info(f"Device: {device}")
     logger.info(f"Multi-task: {args.multi_task}")
-    logger.info(f"Target tasks: action_class, severity, offence")
+    logger.info(f"Target tasks: action_class, severity")
     
     try:
         # Create transforms
@@ -1049,7 +1043,7 @@ def main():
             core_weight = args.core_task_weight
             support_weight = args.support_task_weight
             
-            logger.info("🎯 Smart task weighting enabled for 3-task MVFouls:")
+            logger.info("🎯 Smart task weighting enabled for 2-task MVFouls:")
             logger.info(f"   Core tasks: {primary_tasks}")
             logger.info(f"   Weights - Core: {core_weight}x, Support: {support_weight}x")
             

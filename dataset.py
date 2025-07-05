@@ -44,26 +44,24 @@ except ImportError:
 TASKS_INFO = OrderedDict([
     ("action_class", ["Missing/Empty", "Standing tackling", "Tackling", "Challenge", "Holding", "Elbowing", "High leg", "Pushing", "Dont know", "Dive"]),
     ("severity", ["Missing", "1", "2", "3", "4", "5"]),
-    ("offence", ["Missing/Empty", "Offence", "No offence", "Between"]),
 ])
 
-# VALIDATION: Ensure this dataset only supports exactly these 3 tasks
-EXPECTED_TASKS = ["action_class", "severity", "offence"]
-assert list(TASKS_INFO.keys()) == EXPECTED_TASKS, f"Dataset must contain exactly these 3 tasks: {EXPECTED_TASKS}"
+# VALIDATION: Ensure this dataset only supports exactly these 2 tasks
+EXPECTED_TASKS = ["action_class", "severity"]
+assert list(TASKS_INFO.keys()) == EXPECTED_TASKS, f"Dataset must contain exactly these 2 tasks: {EXPECTED_TASKS}"
 
 # Create label-to-index and index-to-label mappings
 LABEL2IDX = {task: {lbl: i for i, lbl in enumerate(labels)} for task, labels in TASKS_INFO.items()}
 IDX2LABEL = {task: labels for task, labels in TASKS_INFO.items()}
 
-# Number of tasks (always 3 for MVFouls)
+# Number of tasks (always 2 for MVFouls)
 N_TASKS = len(TASKS_INFO)
-assert N_TASKS == 3, f"MVFouls dataset must have exactly 3 tasks, found {N_TASKS}"
+assert N_TASKS == 2, f"MVFouls dataset must have exactly 2 tasks, found {N_TASKS}"
 
-# Field mapping for annotations - exactly the 3 core tasks
+# Field mapping for annotations - exactly the 2 core tasks
 FIELD_MAP = {
     'action_class': 'Action class',
     'severity': 'Severity',
-    'offence': 'Offence',
 }
 
 @dataclass

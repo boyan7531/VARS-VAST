@@ -221,13 +221,13 @@ class MVFoulsModel(nn.Module):
                 self.task_names = metadata['task_names']
                 self.num_classes_per_task = metadata['num_classes']
                 
-                # Validation: Ensure exactly 3 tasks
-                expected_tasks = ['action_class', 'severity', 'offence']
+                # Validation: Ensure exactly 2 tasks  (action_class, severity)
+                expected_tasks = ['action_class', 'severity']
                 if set(self.task_names) != set(expected_tasks):
-                    raise ValueError(f"Multi-task model expects exactly these 3 tasks: {expected_tasks}, "
+                    raise ValueError(f"Multi-task model expects exactly these 2 tasks: {expected_tasks}, "
                                    f"but found: {self.task_names}")
                 
-                print(f"✅ Multi-task model configured for exactly 3 MVFouls tasks:")
+                print(f"✅ Multi-task model configured for exactly 2 MVFouls tasks:")
                 for task_name, num_cls in zip(self.task_names, self.num_classes_per_task):
                     print(f"   📋 {task_name}: {num_cls} classes")
             else:
