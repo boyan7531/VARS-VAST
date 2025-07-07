@@ -591,32 +591,38 @@ class VideoMViTBackbone(nn.Module):
 
             thw = inferred_thw  # Start with exact (T,H,W) if we have it
 
-            for block in self.model.blocks:
-                try:
-                    # Fast path: most blocks accept a single tensor argument.
-                    features = block(features)
-                except TypeError as e:
-                    # Fallback for `MultiscaleBlock` which requires (x, thw).
-                    # We only handle the specific missing-parameter error.
-                    if "thw" not in str(e):
-                        raise  # Different signature issue – re-raise
+            # Handle checkpointed vs normal blocks
+            if hasattr(self.model.blocks, 'blocks'):
+                # Checkpointed case: use the wrapper's forward method
+                features = self.model.blocks(features)
+            else:
+                # Normal case: iterate through blocks
+                for block in self.model.blocks:
+                    try:
+                        # Fast path: most blocks accept a single tensor argument.
+                        features = block(features)
+                    except TypeError as e:
+                        # Fallback for `MultiscaleBlock` which requires (x, thw).
+                        # We only handle the specific missing-parameter error.
+                        if "thw" not in str(e):
+                            raise  # Different signature issue – re-raise
 
-                    # Lazily build a thw tuple – try to be accurate, but fall
-                    # back to a rough estimate if we cannot infer it.
-                    if thw is None:
-                        if features.dim() == 3:
-                            B, N, _ = features.shape
-                            # Attempt to reverse-engineer the grid assuming
-                            # a square spatial layout.
-                            T_est = 16
-                            hw = max(N // T_est, 1)
-                            H_est = W_est = int(hw ** 0.5)
-                            thw = (T_est, H_est, W_est)
-                        else:
-                            thw = (1, 1, 1)
+                        # Lazily build a thw tuple – try to be accurate, but fall
+                        # back to a rough estimate if we cannot infer it.
+                        if thw is None:
+                            if features.dim() == 3:
+                                B, N, _ = features.shape
+                                # Attempt to reverse-engineer the grid assuming
+                                # a square spatial layout.
+                                T_est = 16
+                                hw = max(N // T_est, 1)
+                                H_est = W_est = int(hw ** 0.5)
+                                thw = (T_est, H_est, W_est)
+                            else:
+                                thw = (1, 1, 1)
 
-                    # Call block with the inferred thw.
-                    features, thw = block(features, thw)
+                        # Call block with the inferred thw.
+                        features, thw = block(features, thw)
 
             # Final norm – only apply if the feature dimension matches the LayerNorm
             if hasattr(self.model, "norm"):
