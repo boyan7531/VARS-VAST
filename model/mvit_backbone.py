@@ -521,10 +521,11 @@ class VideoMViTBackbone(nn.Module):
                 if candidate_dims:
                     # Use smallest positive value – safer for small variants (S, XS)
                     positive_dims = [d for d in candidate_dims if d > 0]
-                    self.out_dim = min(positive_dims) if positive_dims else 768
+                    self.out_dim = min(positive_dims) if positive_dims else 96  # MViTv2-S default
                 else:
-                    # Absolute fallback to known large variant dimension
-                    self.out_dim = 768
+                    # Absolute fallback - MViTv2-S uses 96, MViTv2-B uses 768
+                    # Since we're using mvitv2_s, default to 96
+                    self.out_dim = 96
                 self.spatial_dims = None
                 self.temporal_dims = None
                 print(f"Using fallback output dimension: {self.out_dim} (inferred)")
@@ -587,7 +588,8 @@ class VideoMViTBackbone(nn.Module):
             B, C, T, H, W = features.shape
             inferred_thw = (T, H, W)
             # Move channels to last dim, then flatten the spatial-temporal grid
-            features = features.permute(0, 2, 3, 4, 1).reshape(B, T * H * W, C)
+            # Use view instead of reshape to avoid shape mismatch issues
+            features = features.permute(0, 2, 3, 4, 1).contiguous().view(B, T * H * W, C)
 
             # Now that features are (B, N, C) we can safely apply
             # TorchVision's `PositionalEncoding` module if present.
