@@ -378,7 +378,18 @@ class MVFoulsHead(nn.Module):
             # Batch normalization - use GroupNorm for batch_size=1 compatibility
             if self.use_batch_norm:
                 # Use GroupNorm instead of BatchNorm to handle batch_size=1
-                num_groups = min(32, max(1, out_dim // 16))
+                # Find a divisor of out_dim that's close to out_dim // 16
+                target_groups = out_dim // 16
+                if target_groups == 0:
+                    target_groups = 1
+                # Find the largest divisor of out_dim that's <= min(32, target_groups)
+                max_groups = min(32, target_groups)
+                num_groups = 1
+                for g in range(max_groups, 0, -1):
+                    if out_dim % g == 0:
+                        num_groups = g
+                        break
+                print(f"🔧 GroupNorm: out_dim={out_dim}, num_groups={num_groups}")
                 shared_layers.append(nn.GroupNorm(num_groups, out_dim))
             
             # Activation
@@ -413,7 +424,17 @@ class MVFoulsHead(nn.Module):
                 if i < self.task_specific_layers - 1:
                     if self.use_batch_norm:
                         # Use GroupNorm instead of BatchNorm to handle batch_size=1
-                        num_groups = min(32, max(1, out_dim // 16))
+                        # Find a divisor of out_dim that's close to out_dim // 16
+                        target_groups = out_dim // 16
+                        if target_groups == 0:
+                            target_groups = 1
+                        # Find the largest divisor of out_dim that's <= min(32, target_groups)
+                        max_groups = min(32, target_groups)
+                        num_groups = 1
+                        for g in range(max_groups, 0, -1):
+                            if out_dim % g == 0:
+                                num_groups = g
+                                break
                         task_layers.append(nn.GroupNorm(num_groups, out_dim))
                     task_layers.append(act_fn)
                     if self.dropout_p is not None and self.dropout_p > 0:
