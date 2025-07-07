@@ -323,19 +323,57 @@ class VideoSwinBackbone(nn.Module):
     
     def _enable_checkpointing(self):
         """Enable gradient checkpointing if supported."""
+        checkpointing_enabled = False
+        
         try:
-            # Check if gradient checkpointing is available
-            if hasattr(self.model, 'enable_gradient_checkpointing'):
+            # Method 1: Try timm-style model-level checkpointing
+            if hasattr(self.model, 'set_grad_checkpointing'):
+                self.model.set_grad_checkpointing(True)
+                print("✅ Gradient checkpointing enabled (timm-style)")
+                checkpointing_enabled = True
+            
+            # Method 2: Check if gradient checkpointing is available
+            elif hasattr(self.model, 'enable_gradient_checkpointing'):
                 self.model.enable_gradient_checkpointing()
-                print("Gradient checkpointing enabled")
+                print("✅ Gradient checkpointing enabled (model-level)")
+                checkpointing_enabled = True
+            
+            # Method 3: Try alternative methods on modules
             else:
-                # Try alternative methods
                 for module in self.model.modules():
                     if hasattr(module, 'gradient_checkpointing'):
                         module.gradient_checkpointing = True
-                print("Gradient checkpointing enabled (alternative method)")
+                        checkpointing_enabled = True
+                if checkpointing_enabled:
+                    print("✅ Gradient checkpointing enabled (module-level)")
+            
+            # Method 4: Manual checkpointing using torch.utils.checkpoint for Video Swin
+            if not checkpointing_enabled and hasattr(self.model, 'features'):
+                # Store original features and wrap them with checkpoint
+                import torch.utils.checkpoint as checkpoint
+                original_features = self.model.features
+                
+                # Create a wrapper that uses checkpoint
+                class CheckpointedSequential(nn.Module):
+                    def __init__(self, features):
+                        super().__init__()
+                        self.features = features
+                    
+                    def forward(self, x):
+                        if self.training:
+                            return checkpoint.checkpoint(self.features, x)
+                        else:
+                            return self.features(x)
+                
+                self.model.features = CheckpointedSequential(original_features)
+                print("✅ Gradient checkpointing enabled (manual torch.utils.checkpoint)")
+                checkpointing_enabled = True
+                
         except Exception as e:
-            warnings.warn(f"Could not enable gradient checkpointing: {e}")
+            print(f"⚠️  Could not enable gradient checkpointing: {e}")
+        
+        if not checkpointing_enabled:
+            print("⚠️  Gradient checkpointing not available for this Video Swin implementation")
     
     def _determine_output_dimensions(self):
         """Determine output dimensions dynamically by running a test forward pass."""

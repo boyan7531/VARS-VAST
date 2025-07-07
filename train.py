@@ -332,6 +332,10 @@ def main():
                         help='Freeze backbone during training')
     parser.add_argument('--freeze-mode', type=str, default=None, choices=['none', 'freeze_all', 'gradual'],
                         help='Backbone freeze mode. Overrides --freeze-backbone if set')
+    parser.add_argument('--backbone-arch', type=str, default='swin',
+                        help='Backbone architecture (swin, mvit, mvitv2_s, mvitv2_b)')
+    parser.add_argument('--backbone-checkpointing', action='store_true',
+                        help='Enable gradient checkpointing on backbone blocks to reduce VRAM usage ~40%')
     
     # Training arguments
     parser.add_argument('--epochs', type=int, default=50,
@@ -443,8 +447,10 @@ def main():
         model_config = {
             'multi_task': args.multi_task,
             'num_classes': args.num_classes,
+            'backbone_arch': args.backbone_arch,
             'backbone_pretrained': args.pretrained,
             'backbone_freeze_mode': args.freeze_mode if args.freeze_mode is not None else ('freeze_all' if args.freeze_backbone else 'none'),
+            'backbone_checkpointing': args.backbone_checkpointing,
             'head_dropout': 0.5,
             'head_pooling': 'avg',
             'head_loss_type': 'focal'

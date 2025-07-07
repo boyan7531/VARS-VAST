@@ -14,17 +14,21 @@ challenge_annotations: "./mvfouls/challenge_annotations.csv"  # Challenge annota
 # Model Configuration
 multi_task: true  # Set to false for single-task learning
 num_classes: 2    # Only used for single-task mode
-pretrained: true  # Use pretrained Video Swin backbone
+backbone_arch: "mvitv2_s"  # Options: swin, mvit, mvitv2_s, mvitv2_b
+pretrained: true  # Use pretrained backbone weights
 freeze_backbone: false  # Whether to freeze backbone during training
+freeze_mode: "gradual"  # Options: none, freeze_all, gradual, freeze_stages{k}
+backbone_checkpointing: false  # Enable gradient checkpointing to reduce VRAM ~40% (+10-20% training time)
 
 # Training Configuration
 epochs: 50
-batch_size: 8     # Adjust based on your GPU memory
+batch_size: 8     # Increase to 12-16 if using backbone_checkpointing
 lr: 0.0001        # Learning rate
 weight_decay: 0.0001
 optimizer: "adamw"  # Options: adamw, adam, sgd
 scheduler: "cosine"  # Options: cosine, step, plateau, warmup_cosine
 warmup_steps: 1000  # For warmup_cosine scheduler
+gradient_accumulation_steps: 2  # Increase to 4 with checkpointing for effective BS=32-64
 
 # Data Processing
 max_frames: 32    # Maximum frames per video

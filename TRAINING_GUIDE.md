@@ -91,8 +91,11 @@ python train.py --config config_example.yaml --resume ./outputs/mvfouls_multi_20
 ### Model Settings
 - `--multi-task`: Enable multi-task learning
 - `--num-classes`: Number of classes (single-task only)
+- `--backbone-arch`: Backbone architecture (swin, mvit, mvitv2_s, mvitv2_b)
 - `--pretrained`: Use pretrained backbone (recommended)
 - `--freeze-backbone`: Freeze backbone during training
+- `--freeze-mode`: Freeze policy (none, freeze_all, gradual, freeze_stages{k})
+- `--backbone-checkpointing`: Enable gradient checkpointing for memory efficiency
 
 ### Training Settings
 - `--epochs`: Number of training epochs
@@ -143,11 +146,47 @@ Check detailed logs in `training.log` for debugging and analysis.
 - **Reduce batch size**: Start with `--batch-size 4` and increase as memory allows
 - **Use gradient accumulation**: `--gradient-accumulation-steps 4` for effective batch size of 16
 - **Reduce max frames**: `--max-frames 16` if videos are long
+- **Enable gradient checkpointing**: `--backbone-checkpointing` to reduce VRAM usage by ~40%
 
 ### Training Speed
 - **Increase num_workers**: `--num-workers 8` (match your CPU cores)
 - **Use mixed precision**: The model automatically uses efficient operations
 - **Freeze backbone initially**: `--freeze-backbone` for faster initial training
+
+### Gradient Checkpointing 🔄
+Gradient checkpointing trades compute for memory by recomputing activations during the backward pass instead of storing them.
+
+**Benefits:**
+- Reduces VRAM usage by ~40%
+- Enables larger batch sizes or longer sequences
+- Compatible with mixed-precision training
+
+**Trade-offs:**
+- Increases training time by ~10-20%
+- Uses more compute (recomputes activations)
+
+**When to use:**
+- Limited GPU memory (< 12GB VRAM)
+- Want to increase batch size for better training
+- Training with long video sequences
+
+**Recommended hyperparameter adjustments:**
+- Increase batch size by 50-100% (e.g., 8 → 12-16)
+- Increase gradient accumulation steps (e.g., 2 → 4)
+- Consider using smaller, more efficient architectures (mvitv2_s vs swin)
+
+**Usage:**
+```bash
+# Enable gradient checkpointing
+python train.py --backbone-checkpointing [other args]
+
+# Combine with other memory optimizations
+python train.py \
+  --backbone-arch mvitv2_s \
+  --backbone-checkpointing \
+  --batch-size 12 \
+  --gradient-accumulation-steps 4
+```
 
 ### Example Memory-Efficient Config
 ```bash
@@ -157,6 +196,8 @@ python train.py \
   --train-annotations ./mvfouls/train.csv \
   --val-annotations ./mvfouls/val.csv \
   --multi-task \
+  --backbone-arch mvitv2_s \
+  --backbone-checkpointing \
   --batch-size 4 \
   --gradient-accumulation-steps 4 \
   --max-frames 16 \

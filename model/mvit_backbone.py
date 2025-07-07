@@ -355,8 +355,14 @@ class VideoMViTBackbone(nn.Module):
         checkpointing_enabled = False
         
         try:
-            # For MViTv2, try to enable checkpointing on blocks
-            if hasattr(self.model, 'blocks'):
+            # Method 1: Try timm-style model-level checkpointing
+            if hasattr(self.model, 'set_grad_checkpointing'):
+                self.model.set_grad_checkpointing(True)
+                print("✅ Gradient checkpointing enabled (timm-style)")
+                checkpointing_enabled = True
+            
+            # Method 2: For MViTv2, try to enable checkpointing on blocks
+            elif hasattr(self.model, 'blocks'):
                 for block in self.model.blocks:
                     # Try different checkpointing attributes
                     if hasattr(block, 'use_checkpoint'):
@@ -372,10 +378,34 @@ class VideoMViTBackbone(nn.Module):
                 if checkpointing_enabled:
                     print("✅ Gradient checkpointing enabled on MViTv2 blocks")
             
-            # Try model-level checkpointing
+            # Method 3: Try model-level checkpointing
             if not checkpointing_enabled and hasattr(self.model, 'enable_gradient_checkpointing'):
                 self.model.enable_gradient_checkpointing()
                 print("✅ Gradient checkpointing enabled (model-level)")
+                checkpointing_enabled = True
+            
+            # Method 4: Manual checkpointing using torch.utils.checkpoint
+            if not checkpointing_enabled and hasattr(self.model, 'blocks'):
+                # Store original blocks and wrap them with checkpoint
+                import torch.utils.checkpoint as checkpoint
+                original_blocks = self.model.blocks
+                
+                # Create a wrapper that uses checkpoint
+                class CheckpointedSequential(nn.Module):
+                    def __init__(self, blocks):
+                        super().__init__()
+                        self.blocks = blocks
+                    
+                    def forward(self, x, *args, **kwargs):
+                        for block in self.blocks:
+                            if self.training:
+                                x = checkpoint.checkpoint(block, x, *args, **kwargs)
+                            else:
+                                x = block(x, *args, **kwargs)
+                        return x
+                
+                self.model.blocks = CheckpointedSequential(original_blocks)
+                print("✅ Gradient checkpointing enabled (manual torch.utils.checkpoint)")
                 checkpointing_enabled = True
                 
         except Exception as e:
