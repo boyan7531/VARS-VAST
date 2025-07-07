@@ -204,8 +204,9 @@ class VideoMViTBackbone(nn.Module):
     def _remove_classifier_head(self):
         """Remove the classifier head and related components."""
         # Remove classifier components
-        for attr_name in ['head', 'cls_head', 'classifier']:
+        for attr_name in ['head', 'cls_head', 'classifier', 'fc', 'linear']:
             if hasattr(self.model, attr_name):
+                print(f"🗑️  Removing {attr_name} from model")
                 delattr(self.model, attr_name)
         
         # Keep norm layer as it's part of feature extraction
@@ -519,9 +520,16 @@ class VideoMViTBackbone(nn.Module):
                 
                 # Select the most common (mode) or first entry
                 if candidate_dims:
+                    # Debug: show what dimensions were found
+                    print(f"⚠️  Found candidate dimensions: {candidate_dims}")
                     # Use smallest positive value – safer for small variants (S, XS)
                     positive_dims = [d for d in candidate_dims if d > 0]
-                    self.out_dim = min(positive_dims) if positive_dims else 96  # MViTv2-S default
+                    # For MViTv2-S, force 96 if we find any dimension > 200 (likely wrong)
+                    if positive_dims and min(positive_dims) > 200:
+                        print(f"⚠️  Detected large dimension {min(positive_dims)}, forcing MViTv2-S default (96)")
+                        self.out_dim = 96
+                    else:
+                        self.out_dim = min(positive_dims) if positive_dims else 96  # MViTv2-S default
                 else:
                     # Absolute fallback - MViTv2-S uses 96, MViTv2-B uses 768
                     # Since we're using mvitv2_s, default to 96
