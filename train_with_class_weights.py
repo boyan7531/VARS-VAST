@@ -222,10 +222,18 @@ def apply_gradual_unfreezing(model: MVFoulsModel, epoch: int, unfreeze_schedule:
         
         # Apply conservative LR reduction after stage-1 opens for stability
         if new_stage == 2 and optimizer is not None and not hasattr(args, '_lr_reduced_stage1'):
-            for param_group in optimizer.param_groups:
-                param_group['lr'] *= 0.7  # 30% reduction for stability
+            # REMOVED: The 30% LR reduction that was killing learning after epoch 10
+            # OLD CODE: for param_group in optimizer.param_groups: param_group['lr'] *= 0.7
+            # NEW: Keep LR stable or scale up slightly if adaptive LR is enabled
+            if args and args.adaptive_lr:
+                backbone_groups = [g for g in optimizer.param_groups 
+                                 if 'backbone' in g.get('name', '').lower()]
+                for g in backbone_groups:
+                    g['lr'] *= 1.1  # Slight increase to help newly unfrozen layers learn
+                logger.info(f"🔧 Applied 10% LR increase for newly unfrozen stage-1 layers")
+            else:
+                logger.info(f"🔧 Keeping LR stable after stage-1 unfreeze (no reduction)")
             args._lr_reduced_stage1 = True
-            logger.info(f"🔧 Applied 30% LR reduction after stage-1 unfreeze for training stability")
 
 
 def apply_adaptive_lr_scaling(optimizer, group_name: str, trainable_params: int, current_stage: int, new_stage: int, args, logger):
@@ -718,10 +726,19 @@ def create_balanced_sampler(dataset: MVFoulsDataset, task_names: Union[str, List
     
     print(f"✅ Created balanced sampler: {num_samples} samples, {len(class_counts)} unique classes")
     
+    # IMPROVED: Use replacement=False when we have enough samples to avoid duplicates
+    min_class_count = min(class_counts.values())
+    use_replacement = min_class_count < 32  # Use replacement if smallest class has < 32 samples
+    
+    if not use_replacement:
+        print(f"📊 Using sampling without replacement (min class count: {min_class_count})")
+    else:
+        print(f"📊 Using sampling with replacement (min class count: {min_class_count} < 32)")
+    
     return WeightedRandomSampler(
         weights=sample_weights,
         num_samples=num_samples,
-        replacement=True
+        replacement=use_replacement
     )
 
 
@@ -1204,6 +1221,13 @@ def main():
                 logger.warning("⚠️  Both balanced sampling and class weights are enabled!")
                 logger.warning("   This may cause over-correction of class imbalance.")
                 logger.warning("   Consider using --disable-class-weights with balanced sampling.")
+            
+            # NEW: Check for logit adjustment conflict
+            if args.logit_adjustment:
+                logger.warning("⚠️  Both balanced sampling and logit adjustment are enabled!")
+                logger.warning("   This causes conflicting rebalancing strategies.")
+                logger.warning("   Logit adjustment expects natural class priors, but balanced sampling makes classes uniform.")
+                logger.warning("   Consider using EITHER --balanced-sampling OR --logit-adjustment, not both.")
             
             # Handle convenience flag for joint severity sampling
             if args.joint_severity_sampling:
