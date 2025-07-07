@@ -201,8 +201,33 @@ class VideoMViTBackbone(nn.Module):
         if unexpected_keys:
             print(f"⚠️  Found {len(unexpected_keys)} unexpected keys during weight mapping")
     
+    def _infer_out_dim_from_classifier(self):
+        """
+        Infer backbone output dimension from pretrained classifier head.
+        This is the most reliable method since the classifier's in_features
+        must match the backbone's output dimension.
+        
+        Returns:
+            int or None: The backbone output dimension if found, None otherwise
+        """
+        for attr_name in ['head', 'cls_head', 'classifier', 'fc', 'linear']:
+            if hasattr(self.model, attr_name):
+                layer = getattr(self.model, attr_name)
+                if isinstance(layer, nn.Linear):
+                    out_dim = layer.in_features
+                    print(f"📐 Inferred backbone output dimension: {out_dim} (from {attr_name}.in_features)")
+                    return out_dim
+        return None
+    
     def _remove_classifier_head(self):
         """Remove the classifier head and related components."""
+        # First, try to infer output dimension from classifier before removing it
+        if not hasattr(self, 'out_dim') or self.out_dim is None:
+            inferred_dim = self._infer_out_dim_from_classifier()
+            if inferred_dim is not None:
+                self.out_dim = inferred_dim
+                print(f"✅ Stored backbone output dimension: {self.out_dim}")
+        
         # Remove classifier components
         for attr_name in ['head', 'cls_head', 'classifier', 'fc', 'linear']:
             if hasattr(self.model, attr_name):
@@ -445,6 +470,13 @@ class VideoMViTBackbone(nn.Module):
     
     def _determine_output_dimensions(self):
         """Determine output dimensions dynamically by running a test forward pass."""
+        # If we already have out_dim from classifier inference, use it
+        if hasattr(self, 'out_dim') and self.out_dim is not None:
+            print(f"✅ Using pre-determined output dimension: {self.out_dim}")
+            self.spatial_dims = None
+            self.temporal_dims = None
+            return
+        
         self.model.eval()
         with torch.no_grad():
             # MViTv2 typically uses 16 frames
@@ -471,14 +503,12 @@ class VideoMViTBackbone(nn.Module):
                     self.spatial_dims = None
                     self.temporal_dims = None
                     
-                print(f"MViTv2-B output dimension: {self.out_dim}")
+                print(f"✅ Forward pass output dimension: {self.out_dim}")
                 
             except Exception as e:
-                print(f"⚠️  Could not determine output dimensions: {e}")
+                print(f"⚠️  Could not determine output dimensions via forward pass: {e}")
                 # ----------------------------------------------------------------------------
-                # Robust fallback – try to infer embedding dimension from the model before
-                # defaulting to a hard-coded value. This covers variants such as MViTv2-S
-                # (dim=96) where using 768 would break the head.
+                # Robust fallback – try to infer embedding dimension from the model structure
                 # ----------------------------------------------------------------------------
                 candidate_dims: List[int] = []
 
@@ -504,7 +534,6 @@ class VideoMViTBackbone(nn.Module):
                         if isinstance(of, int):
                             candidate_dims.append(of)
 
-
                 # Try norm.normalized_shape
                 if hasattr(self.model, "norm") and hasattr(self.model.norm, "normalized_shape"):
                     ns = self.model.norm.normalized_shape
@@ -518,25 +547,25 @@ class VideoMViTBackbone(nn.Module):
                             candidate_dims.append(layer.in_features)
                             break
                 
-                # Select the most common (mode) or first entry
+                # Select the best candidate dimension
                 if candidate_dims:
                     # Debug: show what dimensions were found
                     print(f"⚠️  Found candidate dimensions: {candidate_dims}")
-                    # Use smallest positive value – safer for small variants (S, XS)
+                    # Use the largest positive value as it's most likely the final feature dimension
                     positive_dims = [d for d in candidate_dims if d > 0]
-                    # For MViTv2-S, force 96 if we find any dimension > 200 (likely wrong)
-                    if positive_dims and min(positive_dims) > 200:
-                        print(f"⚠️  Detected large dimension {min(positive_dims)}, forcing MViTv2-S default (96)")
-                        self.out_dim = 96
+                    if positive_dims:
+                        self.out_dim = max(positive_dims)  # Use largest (most likely correct for final features)
+                        print(f"✅ Selected dimension: {self.out_dim} (largest candidate)")
                     else:
-                        self.out_dim = min(positive_dims) if positive_dims else 96  # MViTv2-S default
+                        self.out_dim = 768  # Conservative fallback for MViTv2
+                        print(f"⚠️  No positive candidates, using fallback: {self.out_dim}")
                 else:
-                    # Absolute fallback - MViTv2-S uses 96, MViTv2-B uses 768
-                    # Since we're using mvitv2_s, default to 96
-                    self.out_dim = 96
+                    # Absolute fallback - most MViTv2 variants use 768
+                    self.out_dim = 768
+                    print(f"⚠️  No candidates found, using default: {self.out_dim}")
+                
                 self.spatial_dims = None
                 self.temporal_dims = None
-                print(f"Using fallback output dimension: {self.out_dim} (inferred)")
     
     def _forward_features(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the backbone **without** the classification head.
