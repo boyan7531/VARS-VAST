@@ -397,11 +397,39 @@ class VideoMViTBackbone(nn.Module):
                         self.blocks = blocks
                     
                     def forward(self, x, *args, **kwargs):
+                        # Initialize thw for MultiscaleBlock if needed
+                        thw = None
+                        if args:
+                            thw = args[0]  # Assume first arg is thw if provided
+                        
                         for block in self.blocks:
-                            if self.training:
-                                x = checkpoint.checkpoint(block, x, *args, **kwargs)
-                            else:
-                                x = block(x, *args, **kwargs)
+                            try:
+                                if self.training:
+                                    x = checkpoint.checkpoint(block, x)
+                                else:
+                                    x = block(x)
+                            except TypeError as e:
+                                # Handle MultiscaleBlock that requires thw parameter
+                                if "thw" in str(e):
+                                    # Lazily build thw if not provided
+                                    if thw is None:
+                                        if x.dim() == 3:
+                                            B, N, _ = x.shape
+                                            # Estimate thw from token count
+                                            T_est = 16
+                                            hw = max(N // T_est, 1)
+                                            H_est = W_est = int(hw ** 0.5)
+                                            thw = (T_est, H_est, W_est)
+                                        else:
+                                            thw = (1, 1, 1)
+                                    
+                                    # Call with thw parameter
+                                    if self.training:
+                                        x, thw = checkpoint.checkpoint(block, x, thw)
+                                    else:
+                                        x, thw = block(x, thw)
+                                else:
+                                    raise  # Re-raise if not a thw-related error
                         return x
                 
                 self.model.blocks = CheckpointedSequential(original_blocks)
