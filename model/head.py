@@ -719,8 +719,10 @@ class MVFoulsHead(nn.Module):
         """
         class_weights = class_weights or self.class_weights
         
-        # Apply logit adjustment if enabled (single-task)
-        if self.use_logit_adjustment:
+        # Apply logit adjustment (Balanced Softmax) ONLY when using CE loss.
+        # Applying logit adjustment with focal/BCE is not theoretically sound and
+        # can result in degenerate solutions (e.g., predicting a single class).
+        if self.use_logit_adjustment and self.loss_type == 'ce':
             logits = logits + self.class_prior_logits.to(logits.device)
         
         if self.loss_type == 'ce':
@@ -773,9 +775,18 @@ class MVFoulsHead(nn.Module):
             targets = targets_dict[task_name]
             
             # ------------------------------------------------------------------
-            # Apply logit adjustment if enabled (per task)
+            # Apply logit adjustment (Balanced Softmax) ONLY when the task uses
+            # Cross-Entropy loss. Applying the class-prior shift when using focal
+            # loss (or other loss types) can negate the intended re-weighting and
+            # lead to collapsed predictions (e.g. predicting just the majority
+            # class). Restricting it to CE avoids this conflict while preserving
+            # the benefits of Balanced Softmax for CE tasks.
             # ------------------------------------------------------------------
-            if self.use_logit_adjustment and task_name in self.class_prior_logits:
+            if (
+                self.use_logit_adjustment
+                and task_name in self.class_prior_logits
+                and self.loss_types_per_task[self.task_names.index(task_name)] == 'ce'
+            ):
                 logits = logits + self.class_prior_logits[task_name].to(logits.device)
             
             # Get task-specific loss type and class weights
