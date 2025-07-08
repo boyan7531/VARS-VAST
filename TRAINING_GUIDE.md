@@ -84,7 +84,7 @@ python train.py --config config_example.yaml --resume ./outputs/mvfouls_multi_20
 - `--val-annotations`: Path to validation CSV annotations file
 - `--test-annotations`: Path to test CSV annotations file (optional)
 - `--challenge-annotations`: Path to challenge CSV annotations file (optional)
-- `--max-frames`: Maximum frames per video (default: 32)
+- `--max-frames`: Maximum frames per video (default: 16)
 - `--fps`: Target FPS for processing (default: 8)
 - `--image-size`: Input image size (default: 224)
 

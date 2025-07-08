@@ -442,7 +442,7 @@ if __name__ == "__main__":
     print("Video transforms implemented successfully!")
     
     # Create dummy video data for testing
-    dummy_video = np.random.randint(0, 256, (32, 256, 256, 3), dtype=np.uint8)
+    dummy_video = np.random.randint(0, 256, (16, 256, 256, 3), dtype=np.uint8)
     dummy_sample = {'video': dummy_video, 'action_id': 1}
     
     # Test each transform

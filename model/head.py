@@ -1268,7 +1268,7 @@ def test_head_shapes():
         # Test (B,T,H,W,C) input if pooling is not None
         if config['pooling'] is not None:
             batch_size_2 = 2
-            x2 = torch.randn(batch_size_2, 8, 7, 7, 1024)
+            x2 = torch.randn(batch_size_2, 4, 7, 7, 1024)
             logits2, extras2 = head(x2)
             
             # For attention pooling, output shape is different
@@ -1325,11 +1325,11 @@ def test_head_shapes():
     
     # Test localizer
     head_with_localizer = build_head(enable_localizer=True, pooling='avg')
-    x_temporal = torch.randn(2, 6, 7, 7, 1024)
+    x_temporal = torch.randn(2, 3, 7, 7, 1024)
     logits, extras = head_with_localizer(x_temporal)
     
     assert 'frame_logits' in extras, "extras should contain 'frame_logits' when localizer is enabled"
-    expected_frame_shape = (2, 6, 2)  # (B, T, num_classes)
+    expected_frame_shape = (2, 3, 2)  # (B, T, num_classes)
     assert extras['frame_logits'].shape == expected_frame_shape, f"Expected frame_logits shape {expected_frame_shape}, got {extras['frame_logits'].shape}"
     print(f"  ✓ Localizer produces frame_logits: {extras['frame_logits'].shape}")
     

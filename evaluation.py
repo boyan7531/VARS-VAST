@@ -376,7 +376,7 @@ def main():
             split=test_split,
             transform=transforms['val'],  # Use validation transforms (no augmentation)
             load_annotations=True,
-            num_frames=32
+            num_frames=16
         )
         
         logger.info(f"📊 Test dataset size: {len(test_dataset)} clips")

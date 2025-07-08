@@ -356,7 +356,7 @@ def main():
                         help='Warmup steps for warmup_cosine scheduler')
     
     # Data processing arguments
-    parser.add_argument('--max-frames', type=int, default=32,
+    parser.add_argument('--max-frames', type=int, default=16,
                         help='Maximum number of frames per video')
     parser.add_argument('--fps', type=int, default=25,
                         help='Target FPS for video processing')

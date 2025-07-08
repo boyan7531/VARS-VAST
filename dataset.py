@@ -211,7 +211,7 @@ class MVFoulsDataset(Dataset):
         load_annotations: bool = True,
         target_size: Optional[Tuple[int, int]] = None,  # (height, width)
         center_frame: int = 75,
-        num_frames: int = 32,
+        num_frames: int = 16,
         cache_mode: str = "none",  # "none", "disk", "mem"
         video_list: Optional[List[str]] = None,
         annotations_dict: Optional[Dict] = None,
@@ -230,7 +230,7 @@ class MVFoulsDataset(Dataset):
             load_annotations (bool): Whether to load annotations (False for challenge)
             target_size (Tuple[int, int]): Optional target size for resizing frames
             center_frame (int): Center frame for temporal window (default: 75)
-            num_frames (int): Number of frames to extract (default: 32)
+            num_frames (int): Number of frames to extract (default: 16)
             cache_mode (str): Caching strategy - "none", "disk", "mem"
             video_list (List[str]): Optional list of video paths (for unit testing)
             annotations_dict (Dict): Optional annotations dict (for unit testing)

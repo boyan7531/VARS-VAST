@@ -781,7 +781,7 @@ class MVFoulsModel(nn.Module):
     def export_onnx(
         self,
         path: Union[str, Path],
-        input_shape: Tuple[int, ...] = (1, 3, 32, 224, 224),
+        input_shape: Tuple[int, ...] = (1, 3, 16, 224, 224),
         export_mode: str = 'concat'
     ):
         """
@@ -1024,7 +1024,7 @@ if __name__ == "__main__":
         model = build_single_task_model(num_classes=2, pretrained=False)
         
         # Test forward pass
-        dummy_input = torch.randn(2, 3, 32, 224, 224)
+        dummy_input = torch.randn(2, 3, 16, 224, 224)
         logits, extras = model(dummy_input)
         
         print(f"   ✓ Input shape: {dummy_input.shape}")
@@ -1046,7 +1046,7 @@ if __name__ == "__main__":
             model = build_multi_task_model(pretrained=False)
             
             # Test forward pass
-            dummy_input = torch.randn(2, 3, 32, 224, 224)
+            dummy_input = torch.randn(2, 3, 16, 224, 224)
             logits_dict, extras = model(dummy_input)
             
             print(f"   ✓ Input shape: {dummy_input.shape}")

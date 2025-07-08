@@ -379,7 +379,7 @@ class VideoSwinBackbone(nn.Module):
         """Determine output dimensions dynamically by running a test forward pass."""
         self.model.eval()
         with torch.no_grad():
-            test_input = torch.randn(1, 3, 32, 224, 224)
+            test_input = torch.randn(1, 3, 16, 224, 224)
             
             # Get features through the pipeline (same as forward method)
             features = self.model.patch_embed(test_input)
@@ -413,7 +413,7 @@ class VideoSwinBackbone(nn.Module):
         Forward pass through the backbone.
         
         Args:
-            x: Input video tensor of shape (batch, 3, 32, 224, 224)
+            x: Input video tensor of shape (batch, 3, 16, 224, 224)
             
         Returns:
             Feature tensor of shape (batch, out_dim) if return_pooled=True,
@@ -527,7 +527,7 @@ if __name__ == "__main__":
     
     # Test input
     batch_size = 2
-    x = torch.randn(batch_size, 3, 32, 224, 224)
+    x = torch.randn(batch_size, 3, 16, 224, 224)
     
     print(f"Input shape: {x.shape}")
     
