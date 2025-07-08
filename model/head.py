@@ -377,11 +377,18 @@ class MVFoulsHead(nn.Module):
             
             # Batch normalization - use GroupNorm for batch_size=1 compatibility
             if self.use_batch_norm:
-                # TEMPORARY FIX: Disable GroupNorm to fix NaN loss
-                # TODO: Re-enable after fixing dimension mismatch
-                print(f"🔧 Skipping GroupNorm: out_dim={out_dim} (temporarily disabled)")
-                # shared_layers.append(nn.GroupNorm(num_groups, out_dim))
-                pass
+                # Calculate appropriate number of groups for GroupNorm
+                # Use 32 groups if possible, otherwise use factors of out_dim
+                num_groups = 32
+                if out_dim % num_groups != 0:
+                    # Find largest factor of out_dim that's <= 32
+                    for ng in [16, 8, 4, 2, 1]:
+                        if out_dim % ng == 0:
+                            num_groups = ng
+                            break
+                
+                shared_layers.append(nn.GroupNorm(num_groups, out_dim))
+                print(f"✅ Added GroupNorm: {num_groups} groups, {out_dim} channels")
             
             # Activation
             shared_layers.append(act_fn)
@@ -414,11 +421,18 @@ class MVFoulsHead(nn.Module):
                 # Only add activation/dropout for intermediate layers, not final layer
                 if i < self.task_specific_layers - 1:
                     if self.use_batch_norm:
-                        # TEMPORARY FIX: Disable GroupNorm to fix NaN loss
-                        # TODO: Re-enable after fixing dimension mismatch
-                        print(f"🔧 Skipping GroupNorm: out_dim={out_dim} (temporarily disabled)")
-                        # task_layers.append(nn.GroupNorm(num_groups, out_dim))
-                        pass
+                        # Calculate appropriate number of groups for GroupNorm
+                        # Use 32 groups if possible, otherwise use factors of out_dim
+                        num_groups = 32
+                        if out_dim % num_groups != 0:
+                            # Find largest factor of out_dim that's <= 32
+                            for ng in [16, 8, 4, 2, 1]:
+                                if out_dim % ng == 0:
+                                    num_groups = ng
+                                    break
+                        
+                        task_layers.append(nn.GroupNorm(num_groups, out_dim))
+                        print(f"✅ Added GroupNorm: {num_groups} groups, {out_dim} channels")
                     task_layers.append(act_fn)
                     if self.dropout_p is not None and self.dropout_p > 0:
                         task_layers.append(nn.Dropout(self.dropout_p))
