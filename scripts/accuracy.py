@@ -172,6 +172,10 @@ def compute_detailed_metrics(
         task_targets = targets[task_name]
         task_classes = class_names[task_name]
         
+        # Define expected classes to handle missing classes in predictions/targets
+        num_expected_classes = len(task_classes)
+        labels = list(range(num_expected_classes))
+        
         # Basic accuracy
         accuracy = accuracy_score(task_targets, task_preds)
         
@@ -184,17 +188,19 @@ def compute_detailed_metrics(
             task_targets, task_preds, average='weighted', zero_division=0
         )
         
-        # Per-class metrics
+        # Per-class metrics - specify labels to handle missing classes
         precision_per_class, recall_per_class, f1_per_class, support_per_class = precision_recall_fscore_support(
-            task_targets, task_preds, average=None, zero_division=0
+            task_targets, task_preds, labels=labels, average=None, zero_division=0
         )
         
-        # Confusion matrix
-        conf_matrix = confusion_matrix(task_targets, task_preds)
+        # Confusion matrix - specify labels to handle missing classes
+        conf_matrix = confusion_matrix(task_targets, task_preds, labels=labels)
         
-        # Classification report
+        # Classification report - explicitly specify labels to handle missing classes
+        
         class_report = classification_report(
             task_targets, task_preds, 
+            labels=labels,
             target_names=task_classes,
             output_dict=True,
             zero_division=0
