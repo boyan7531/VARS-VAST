@@ -860,7 +860,7 @@ def main():
     
     # Add train-fraction argument
     parser.add_argument('--train-fraction', type=float, default=1.0,
-                        help='Fraction of training data to use (e.g., 0.2 for 20% smoke test)')
+                        help='Fraction of training data to use (e.g., 0.2 for 20%% smoke test)')
     
     # Add bag-of-clips arguments
     parser.add_argument('--bag-of-clips', action='store_true',
@@ -917,7 +917,7 @@ def main():
     
     # Backbone gradient checkpointing for memory efficiency
     parser.add_argument('--backbone-checkpointing', action='store_true',
-                        help='Enable torch.utils.checkpoint on backbone blocks to cut VRAM ~40%')
+                        help='Enable torch.utils.checkpoint on backbone blocks to cut VRAM ~40%%')
     
     # Early stopping arguments
     parser.add_argument('--early-stopping', action='store_true',
@@ -926,6 +926,22 @@ def main():
                         help='Number of epochs without improvement before stopping (default: 6)')
     parser.add_argument('--early-stopping-min-delta', type=float, default=0.001,
                         help='Minimum change in metric to qualify as improvement (default: 0.001)')
+    
+    # Learning rate scheduler arguments
+    parser.add_argument('--lr-scheduler', type=str, default='cosine',
+                        choices=['cosine', 'plateau'],
+                        help='Learning-rate scheduler: cosine (default) or plateau')
+    parser.add_argument('--plateau-patience', type=int, default=3,
+                        help='Epochs w/o improvement before LR reduction (default: 3)')
+    parser.add_argument('--plateau-factor', type=float, default=0.5,
+                        help='LR multiplier after plateau (new_lr = old_lr * factor) (default: 0.5)')
+    parser.add_argument('--plateau-threshold', type=float, default=0.001,
+                        help='Minimal change to qualify as improvement (abs) (default: 0.001)')
+    parser.add_argument('--plateau-min-lr', type=float, default=1e-7,
+                        help='Lower LR bound for ReduceLROnPlateau (default: 1e-7)')
+    parser.add_argument('--plateau-mode', type=str, default='auto',
+                        choices=['min', 'max', 'auto'],
+                        help='Metric direction for plateau scheduler (min for loss, max for accuracy/F1, auto to detect) (default: auto)')
     
     args = parser.parse_args()
     
@@ -1000,9 +1016,34 @@ def main():
             raise ValueError(f"Invalid tasks in --primary-tasks: {invalid_tasks}. "
                            f"Valid tasks are: {valid_tasks}")
     
+    # Handle scheduler auto-mode and conflict detection
+    if args.lr_scheduler == 'plateau' and args.plateau_mode == 'auto':
+        # Auto-detect plateau mode based on checkpoint metric
+        if args.checkpoint_metric == 'val_loss':
+            args.plateau_mode = 'min'
+        else:
+            args.plateau_mode = 'max'
+    
     # Setup logging
     log_level = 'DEBUG' if args.verbose else 'INFO'
     logger = setup_logging(log_level)
+    
+    # Check for potential conflicts after logger is available
+    if args.lr_scheduler == 'plateau' and args.adaptive_lr:
+        logger.warning("⚠️  --adaptive-lr and --lr-scheduler plateau may conflict. "
+                      "Plateau will only adjust *base* LR; adaptive scaling "
+                      "can still modify backbone groups after unfreezing.")
+    
+    if args.lr_scheduler == 'plateau':
+        logger.info(f"🔧 ReduceLROnPlateau scheduler configured:")
+        logger.info(f"   Mode: {args.plateau_mode} (metric direction)")
+        logger.info(f"   Patience: {args.plateau_patience} epochs")
+        logger.info(f"   Factor: {args.plateau_factor}x LR reduction")
+        logger.info(f"   Threshold: {args.plateau_threshold} (min improvement)")
+        logger.info(f"   Min LR: {args.plateau_min_lr}")
+        logger.info(f"   Watching metric: {args.checkpoint_metric}")
+    else:
+        logger.info(f"🔧 Using {args.lr_scheduler} scheduler")
     
     # Setup device
     if args.device == 'auto':
@@ -1298,11 +1339,24 @@ def main():
         
         optimizer = optim.AdamW(param_groups)
         
-        # Create scheduler
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=args.epochs
-        )
+        # Create scheduler based on configuration
+        if args.lr_scheduler == 'cosine':
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=args.epochs
+            )
+            plateau_scheduler = False
+        else:  # plateau
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode=args.plateau_mode,
+                factor=args.plateau_factor,
+                patience=args.plateau_patience,
+                threshold=args.plateau_threshold,
+                min_lr=args.plateau_min_lr,
+                verbose=True
+            )
+            plateau_scheduler = True
         
         # Move model to device and ensure class weights are on correct device
         model.to(device)
@@ -1428,8 +1482,14 @@ def main():
                         'LR': f'{optimizer.param_groups[0]["lr"]:.2e}'
                     })
             
+            # Initialize default values for validation metrics
+            val_results = None
+            val_loss = None
+            current_metric = None
+            run_validation = (epoch + 1) % args.eval_freq == 0
+            
             # --- Validation Step ---
-            if (epoch + 1) % args.eval_freq == 0:
+            if run_validation:
                 # Free unused GPU memory before validation to reduce OOM risk
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -1467,17 +1527,52 @@ def main():
                         # IMPORTANT: Update the trainer's reference to the new loader
                         trainer.train_loader = train_loader
                         logger.info(f"   ✅ Dynamic sampler updated for task '{args.dynamic_sampler_task}'. New train loader created.")
+                
+                # Extract validation metrics
+                val_loss = val_results['avg_loss']
+                
+                # --------------------------------------------------------------
+                # Determine metric value for checkpointing
+                # --------------------------------------------------------------
+                def extract_metric(results, name):
+                    """Return numeric metric based on user-selected key."""
+                    if name == 'val_loss':
+                        return -results['avg_loss']  # lower val_loss is better, invert sign
+                    # Overall metrics pre-computed
+                    if name.startswith('overall_'):
+                        key = name.replace('overall_', '')
+                        value = results.get('overall_metrics', {}).get(key)
+                        if value is not None:
+                            return value
+                        # Derive overall macro scores on-the-fly if missing
+                        if key in {'macro_f1', 'macro_recall', 'macro_precision'} and 'task_metrics' in results:
+                            vals = [m.get(key) for m in results['task_metrics'].values() if m.get(key) is not None]
+                            if vals:
+                                return float(np.mean(vals))
+                    # Per-task metric: <task>_<metric>
+                    if '_' in name:
+                        task_name, metric_key = name.split('_', 1)
+                        return results.get('task_metrics', {}).get(task_name, {}).get(metric_key)
+                    return None
+
+                current_metric = extract_metric(val_results, args.checkpoint_metric)
+                if current_metric is None:
+                    logger.warning(f"⚠️  Could not find checkpoint metric '{args.checkpoint_metric}'. Falling back to -val_loss")
+                    current_metric = -val_loss
             
             # Log metrics
             avg_train_loss = sum(m['total_loss'] for m in train_metrics) / len(train_metrics)
-            val_loss = val_results['avg_loss']
             
-            print(f"\n📊 Epoch {epoch + 1} Results:")
-            print(f"   Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f}")
-            
-            # Log validation metrics to console
-            if 'metrics_table' in val_results:
-                logger.info(f"📊 Validation Metrics (Epoch {epoch + 1}):\n{val_results['metrics_table']}")
+            if run_validation:
+                print(f"\n📊 Epoch {epoch + 1} Results:")
+                print(f"   Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f}")
+                
+                # Log validation metrics to console
+                if 'metrics_table' in val_results:
+                    logger.info(f"📊 Validation Metrics (Epoch {epoch + 1}):\n{val_results['metrics_table']}")
+            else:
+                print(f"\n📊 Epoch {epoch + 1} Results:")
+                print(f"   Train Loss: {avg_train_loss:.4f} | Val Loss: [skipped]")
             
             # Log current backbone status
             if args.freeze_mode == 'gradual':
@@ -1488,87 +1583,78 @@ def main():
                 logger.info(f"🔧 Backbone status: stage {current_stage}, "
                            f"{trainable_params:,} trainable ({trainable_pct:.1f}%)")
             
-            # --------------------------------------------------------------
-            # Determine metric value for checkpointing
-            # --------------------------------------------------------------
-            def extract_metric(results, name):
-                """Return numeric metric based on user-selected key."""
-                if name == 'val_loss':
-                    return -results['avg_loss']  # lower val_loss is better, invert sign
-                # Overall metrics pre-computed
-                if name.startswith('overall_'):
-                    key = name.replace('overall_', '')
-                    value = results.get('overall_metrics', {}).get(key)
-                    if value is not None:
-                        return value
-                    # Derive overall macro scores on-the-fly if missing
-                    if key in {'macro_f1', 'macro_recall', 'macro_precision'} and 'task_metrics' in results:
-                        vals = [m.get(key) for m in results['task_metrics'].values() if m.get(key) is not None]
-                        if vals:
-                            return float(np.mean(vals))
-                # Per-task metric: <task>_<metric>
-                if '_' in name:
-                    task_name, metric_key = name.split('_', 1)
-                    return results.get('task_metrics', {}).get(task_name, {}).get(metric_key)
-                return None
-
-            current_metric = extract_metric(val_results, args.checkpoint_metric)
-            if current_metric is None:
-                logger.warning(f"⚠️  Could not find checkpoint metric '{args.checkpoint_metric}'. Falling back to -val_loss")
-                current_metric = -val_loss
-            
-            # Save best model and check early stopping
-            improvement = current_metric - best_metric
-            if improvement > args.early_stopping_min_delta:
-                # Significant improvement found
-                best_metric = current_metric
-                early_stopping_counter = 0  # Reset counter
-                
-                checkpoint = {
-                    'epoch': epoch + 1,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
-                    'best_metric': best_metric,
-                    'config': config,
-                    'backbone_stage': model.backbone.get_current_unfreeze_stage()
-                }
-                
-                # Save with unique filename including epoch and metric
-                model_filename = f'best_model_epoch_{epoch+1:02d}_metric_{best_metric:.4f}.pth'
-                model_path = output_dir / model_filename
-                torch.save(checkpoint, model_path)
-                
-                # Also save as latest best model (for easy loading)
-                latest_path = output_dir / 'best_model_latest.pth'
-                torch.save(checkpoint, latest_path)
-                
-                logger.info(f"💾 New best model saved! Metric: {best_metric:.4f} (+{improvement:.4f})")
-                logger.info(f"   Saved as: {model_filename}")
-                logger.info(f"   Also saved as: best_model_latest.pth")
-                
-                if args.early_stopping:
-                    logger.info(f"🔄 Early stopping counter reset (improvement: +{improvement:.4f})")
-            else:
-                # No significant improvement
-                if args.early_stopping:
-                    early_stopping_counter += 1
-                    logger.info(f"⏳ No improvement for {early_stopping_counter}/{args.early_stopping_patience} epochs "
-                               f"(current: {current_metric:.4f}, best: {best_metric:.4f})")
+            # Save best model and check early stopping (only when we have validation results)
+            if run_validation and current_metric is not None:
+                improvement = current_metric - best_metric
+                if improvement > args.early_stopping_min_delta:
+                    # Significant improvement found
+                    best_metric = current_metric
+                    early_stopping_counter = 0  # Reset counter
                     
-                    if early_stopping_counter >= args.early_stopping_patience:
-                        logger.info(f"🛑 Early stopping triggered! No improvement for {args.early_stopping_patience} epochs.")
-                        logger.info(f"   Best metric: {best_metric:.4f} at epoch {epoch + 1 - early_stopping_counter}")
-                        early_stopping_triggered = True
-                        break
+                    checkpoint = {
+                        'epoch': epoch + 1,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
+                        'best_metric': best_metric,
+                        'config': config,
+                        'backbone_stage': model.backbone.get_current_unfreeze_stage()
+                    }
+                    
+                    # Save with unique filename including epoch and metric
+                    model_filename = f'best_model_epoch_{epoch+1:02d}_metric_{best_metric:.4f}.pth'
+                    model_path = output_dir / model_filename
+                    torch.save(checkpoint, model_path)
+                    
+                    # Also save as latest best model (for easy loading)
+                    latest_path = output_dir / 'best_model_latest.pth'
+                    torch.save(checkpoint, latest_path)
+                    
+                    logger.info(f"💾 New best model saved! Metric: {best_metric:.4f} (+{improvement:.4f})")
+                    logger.info(f"   Saved as: {model_filename}")
+                    logger.info(f"   Also saved as: best_model_latest.pth")
+                    
+                    if args.early_stopping:
+                        logger.info(f"🔄 Early stopping counter reset (improvement: +{improvement:.4f})")
+                else:
+                    # No significant improvement
+                    if args.early_stopping:
+                        early_stopping_counter += 1
+                        logger.info(f"⏳ No improvement for {early_stopping_counter}/{args.early_stopping_patience} epochs "
+                                   f"(current: {current_metric:.4f}, best: {best_metric:.4f})")
+                        
+                        if early_stopping_counter >= args.early_stopping_patience:
+                            logger.info(f"🛑 Early stopping triggered! No improvement for {args.early_stopping_patience} epochs.")
+                            logger.info(f"   Best metric: {best_metric:.4f} at epoch {epoch + 1 - early_stopping_counter}")
+                            early_stopping_triggered = True
+                            break
             
             # Step scheduler
             if scheduler:
-                scheduler.step()
+                if plateau_scheduler:
+                    # ReduceLROnPlateau needs a metric value
+                    if run_validation and val_loss is not None:
+                        # We have validation results from this epoch
+                        if args.plateau_mode == 'min':
+                            # For 'min' mode, we want to minimize the metric (e.g., val_loss)
+                            plateau_metric = val_loss if args.checkpoint_metric == 'val_loss' else -current_metric
+                        else:
+                            # For 'max' mode, we want to maximize the metric (e.g., accuracy)
+                            plateau_metric = -val_loss if args.checkpoint_metric == 'val_loss' else current_metric
+                        
+                        scheduler.step(plateau_metric)
+                        logger.info(f"🔧 Plateau scheduler stepped with metric: {plateau_metric:.4f}")
+                    else:
+                        # No validation this epoch, skip scheduler step for plateau
+                        logger.info(f"🔧 Skipping plateau scheduler step (no validation this epoch)")
+                else:
+                    # CosineAnnealingLR doesn't need a metric
+                    scheduler.step()
             
             # Tensorboard logging
             writer.add_scalar('Loss/Train', avg_train_loss, epoch)
-            writer.add_scalar('Loss/Val', val_loss, epoch)
+            if val_loss is not None:
+                writer.add_scalar('Loss/Val', val_loss, epoch)
             writer.add_scalar('Metric/Best', best_metric, epoch)
             writer.add_scalar('LearningRate/Current', optimizer.param_groups[0]['lr'], epoch)
             
