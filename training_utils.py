@@ -193,7 +193,10 @@ class MultiTaskTrainer:
             if (hasattr(self, 'adaptive_weights') and self.adaptive_weights and 
                 hasattr(self.model.head, 'compute_unified_loss')):
                 # Use unified adaptive loss computation
-                focal_gamma = getattr(self.model, 'task_focal_gamma_map', {}).get('default', 2.0)
+                task_map = getattr(self.model, 'task_focal_gamma_map', {})
+                if task_map is None:
+                    task_map = {}
+                focal_gamma = task_map.get('default', 2.0)
                 
                 loss_dict = self.model.head.compute_unified_loss(
                     filtered_logits,
