@@ -893,9 +893,35 @@ class MVFoulsModel(nn.Module):
         arch_name = self.config.get('backbone_arch', 'swin').upper()
         print(f"  Backbone: {arch_name} ({'pretrained' if self.config['backbone_pretrained'] else 'random init'})")
         print(f"  Freeze mode: {self.config['backbone_freeze_mode']}")
-        print(f"  Head pooling: {self.config['head_pooling']}")
+        
+        # Show ACTUAL head configuration from the head itself
+        if hasattr(self.head, 'pooling_type'):
+            print(f"  Head pooling: {self.head.pooling_type}")
+        else:
+            print(f"  Head pooling: {self.config['head_pooling']}")
+            
         print(f"  Temporal module: {self.config['head_temporal_module']}")
-        print(f"  Loss type: {self.config['head_loss_type']}")
+        
+        # Show ACTUAL loss configuration
+        if hasattr(self.head, 'loss_types_per_task') and self.head.loss_types_per_task:
+            if self.multi_task:
+                loss_info = {}
+                for i, task_name in enumerate(self.head.task_names):
+                    if i < len(self.head.loss_types_per_task):
+                        loss_info[task_name] = self.head.loss_types_per_task[i]
+                print(f"  Loss types: {loss_info}")
+            else:
+                print(f"  Loss type: {self.head.loss_types_per_task[0] if self.head.loss_types_per_task else self.config['head_loss_type']}")
+        else:
+            print(f"  Loss type: {self.config['head_loss_type']}")
+        
+        # Show bag-of-clips configuration if enabled
+        if hasattr(self.head, 'clip_pooling_type'):
+            print(f"  Clip pooling: {self.head.clip_pooling_type} (temp={self.head.clip_pooling_temperature})")
+        
+        # Show enhanced head architecture details
+        if hasattr(self.head, 'hidden_dim') and hasattr(self.head, 'num_shared_layers'):
+            print(f"  Head architecture: {self.head.num_shared_layers} shared layers → {self.head.hidden_dim}D → task heads")
         
         # Parameter counts
         total_params = sum(p.numel() for p in self.parameters())
